@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	gtfs "github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
@@ -30,11 +31,31 @@ const (
 	operatorParam       = "RG"
 )
 
+const (
+	vehiclePositionsCacheInterval = 1 * time.Minute
+	tripUpdatesCacheInterval      = 1 * time.Minute
+	datafeedsRefreshInterval      = 1 * time.Hour
+)
+
 var datafeedsFilePath string
 var datafeedsDir string
 var datafeedsJSONFiles []string
 var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
+
+var (
+	vehiclePositionsCacheMu      sync.RWMutex
+	vehiclePositionsCachePayload []byte
+	vehiclePositionsCacheErr     error
+	vehiclePositionsCacheTime    time.Time
+)
+
+var (
+	tripUpdatesCacheMu      sync.RWMutex
+	tripUpdatesCachePayload []byte
+	tripUpdatesCacheErr     error
+	tripUpdatesCacheTime    time.Time
+)
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -48,30 +69,13 @@ func main() {
 	datafeedsFilePath = filepath.Join(workingDir, "data", "gtfs.zip")
 	datafeedsDir = filepath.Join(workingDir, "data", "gtfs")
 
-	if err := downloadDatafeed(datafeedsFilePath); err != nil {
-		log.Fatalf("failed to download datafeed: %v", err)
-	}
-	if err := unzipDatafeed(datafeedsFilePath, datafeedsDir); err != nil {
-		log.Fatalf("failed to unzip datafeed: %v", err)
+	if err := refreshDatafeeds(); err != nil {
+		log.Fatalf("failed to load datafeeds: %v", err)
 	}
 
-	jsonFiles, err := indexJSONFiles(datafeedsDir)
-	if err != nil {
-		log.Fatalf("failed to index json files: %v", err)
-	}
-	datafeedsJSONFiles = jsonFiles
-
-	files, err := indexDatafeedFiles(datafeedsDir)
-	if err != nil {
-		log.Fatalf("failed to index datafeed files: %v", err)
-	}
-	datafeedsFiles = files
-
-	fileMap, err := buildDatafeedFileMap(datafeedsDir)
-	if err != nil {
-		log.Fatalf("failed to build datafeed file map: %v", err)
-	}
-	datafeedsFileMap = fileMap
+	go runDatafeedsRefresher()
+	go runVehiclePositionsRefresher()
+	go runTripUpdatesRefresher()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tripupdates", tripUpdatesHandler)
@@ -95,117 +99,181 @@ func main() {
 }
 
 func tripUpdatesHandler(w http.ResponseWriter, r *http.Request) {
-	apiKey := os.Getenv("API_KEY")
-	if apiKey == "" {
-		http.Error(w, "API_KEY env var is not set", http.StatusInternalServerError)
+	tripUpdatesCacheMu.RLock()
+	payload := tripUpdatesCachePayload
+	cacheErr := tripUpdatesCacheErr
+	cacheTime := tripUpdatesCacheTime
+	tripUpdatesCacheMu.RUnlock()
+
+	if cacheErr != nil {
+		http.Error(w, fmt.Sprintf("trip updates cache unavailable: %v", cacheErr), http.StatusBadGateway)
 		return
 	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	url := fmt.Sprintf("%s?api_key=%s&agency=%s", baseURL, apiKey, agencyParam)
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
-	if err == nil {
-		req.Header.Set("Accept", "application/x-protobuf")
-	}
-	if err != nil {
-		http.Error(w, "failed to create request", http.StatusInternalServerError)
-		return
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, "failed to fetch trip updates", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		http.Error(w, fmt.Sprintf("upstream error: %s", string(body)), http.StatusBadGateway)
-		return
-	}
-
-	body, err := readResponseBody(resp)
-	if err != nil {
-		http.Error(w, "failed to read upstream response", http.StatusBadGateway)
-		return
-	}
-
-	var feed gtfs.FeedMessage
-	if err := proto.Unmarshal(body, &feed); err != nil {
-		http.Error(w, "invalid GTFS-realtime protobuf from upstream", http.StatusBadGateway)
+	if payload == nil {
+		http.Error(w, "trip updates cache not yet populated", http.StatusServiceUnavailable)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	marshaler := protojson.MarshalOptions{Indent: "  "}
-	payload, err := marshaler.Marshal(&feed)
-	if err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
+	w.Header().Set("X-Cache-Time", cacheTime.UTC().Format(http.TimeFormat))
 	if _, err := w.Write(payload); err != nil {
 		http.Error(w, "failed to write response", http.StatusInternalServerError)
 		return
 	}
 }
 
-func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
-	apiKey := os.Getenv("API_KEY")
+func runTripUpdatesRefresher() {
+	if err := refreshTripUpdates(); err != nil {
+		log.Printf("trip updates refresh failed: %v", err)
+	}
+
+	ticker := time.NewTicker(tripUpdatesCacheInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := refreshTripUpdates(); err != nil {
+			log.Printf("trip updates refresh failed: %v", err)
+		}
+	}
+}
+
+func refreshTripUpdates() error {
+	apiKey := os.Getenv("TRIP_UPDATES_API_KEY")
 	if apiKey == "" {
-		http.Error(w, "API_KEY env var is not set", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("TRIP_UPDATES_API_KEY env var is not set")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	url := fmt.Sprintf("%s?api_key=%s&agency=%s", vehiclePositionsURL, apiKey, agencyParam)
+	url := fmt.Sprintf("%s?api_key=%s&agency=%s", baseURL, apiKey, agencyParam)
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
-	if err == nil {
-		req.Header.Set("Accept", "application/x-protobuf")
-	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		http.Error(w, "failed to create request", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("Accept", "application/x-protobuf")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "failed to fetch vehicle positions", http.StatusBadGateway)
-		return
+		return fmt.Errorf("failed to fetch trip updates: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		http.Error(w, fmt.Sprintf("upstream error: %s", string(body)), http.StatusBadGateway)
-		return
+		return fmt.Errorf("upstream error: %s", string(body))
 	}
 
 	body, err := readResponseBody(resp)
 	if err != nil {
-		http.Error(w, "failed to read upstream response", http.StatusBadGateway)
-		return
+		return fmt.Errorf("failed to read upstream response: %w", err)
 	}
 
 	var feed gtfs.FeedMessage
 	if err := proto.Unmarshal(body, &feed); err != nil {
-		http.Error(w, "invalid GTFS-realtime protobuf from upstream", http.StatusBadGateway)
+		return fmt.Errorf("invalid GTFS-realtime protobuf from upstream: %w", err)
+	}
+
+	marshaler := protojson.MarshalOptions{Indent: "  "}
+	payload, err := marshaler.Marshal(&feed)
+	if err != nil {
+		return fmt.Errorf("failed to encode response: %w", err)
+	}
+
+	tripUpdatesCacheMu.Lock()
+	tripUpdatesCachePayload = payload
+	tripUpdatesCacheErr = nil
+	tripUpdatesCacheTime = time.Now()
+	tripUpdatesCacheMu.Unlock()
+
+	return nil
+}
+
+func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
+	vehiclePositionsCacheMu.RLock()
+	payload := vehiclePositionsCachePayload
+	cacheErr := vehiclePositionsCacheErr
+	cacheTime := vehiclePositionsCacheTime
+	vehiclePositionsCacheMu.RUnlock()
+
+	if cacheErr != nil {
+		http.Error(w, fmt.Sprintf("vehicle positions cache unavailable: %v", cacheErr), http.StatusBadGateway)
+		return
+	}
+	if payload == nil {
+		http.Error(w, "vehicle positions cache not yet populated", http.StatusServiceUnavailable)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	marshaler := protojson.MarshalOptions{Indent: "  "}
-	payload, err := marshaler.Marshal(&feed)
-	if err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
+	w.Header().Set("X-Cache-Time", cacheTime.UTC().Format(http.TimeFormat))
 	if _, err := w.Write(payload); err != nil {
 		http.Error(w, "failed to write response", http.StatusInternalServerError)
 		return
 	}
+}
+
+func runVehiclePositionsRefresher() {
+	if err := refreshVehiclePositions(); err != nil {
+		log.Printf("vehicle positions refresh failed: %v", err)
+	}
+
+	ticker := time.NewTicker(vehiclePositionsCacheInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := refreshVehiclePositions(); err != nil {
+			log.Printf("vehicle positions refresh failed: %v", err)
+		}
+	}
+}
+
+func refreshVehiclePositions() error {
+	apiKey := os.Getenv("LOCATIONS_API_KEY")
+	if apiKey == "" {
+		return fmt.Errorf("LOCATIONS_API_KEY env var is not set")
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	url := fmt.Sprintf("%s?api_key=%s&agency=%s", vehiclePositionsURL, apiKey, agencyParam)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/x-protobuf")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch vehicle positions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upstream error: %s", string(body))
+	}
+
+	body, err := readResponseBody(resp)
+	if err != nil {
+		return fmt.Errorf("failed to read upstream response: %w", err)
+	}
+
+	var feed gtfs.FeedMessage
+	if err := proto.Unmarshal(body, &feed); err != nil {
+		return fmt.Errorf("invalid GTFS-realtime protobuf from upstream: %w", err)
+	}
+
+	marshaler := protojson.MarshalOptions{Indent: "  "}
+	payload, err := marshaler.Marshal(&feed)
+	if err != nil {
+		return fmt.Errorf("failed to encode response: %w", err)
+	}
+
+	vehiclePositionsCacheMu.Lock()
+	vehiclePositionsCachePayload = payload
+	vehiclePositionsCacheErr = nil
+	vehiclePositionsCacheTime = time.Now()
+	vehiclePositionsCacheMu.Unlock()
+
+	return nil
 }
 
 func datafeedsZipHandler(w http.ResponseWriter, r *http.Request) {
@@ -611,5 +679,44 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 		return io.ReadAll(reader)
 	default:
 		return nil, fmt.Errorf("unsupported content-encoding: %s", encoding)
+	}
+}
+
+func refreshDatafeeds() error {
+	if err := downloadDatafeed(datafeedsFilePath); err != nil {
+		return fmt.Errorf("failed to download datafeed: %w", err)
+	}
+	if err := unzipDatafeed(datafeedsFilePath, datafeedsDir); err != nil {
+		return fmt.Errorf("failed to unzip datafeed: %w", err)
+	}
+
+	jsonFiles, err := indexJSONFiles(datafeedsDir)
+	if err != nil {
+		return fmt.Errorf("failed to index json files: %w", err)
+	}
+
+	files, err := indexDatafeedFiles(datafeedsDir)
+	if err != nil {
+		return fmt.Errorf("failed to index datafeed files: %w", err)
+	}
+
+	fileMap, err := buildDatafeedFileMap(datafeedsDir)
+	if err != nil {
+		return fmt.Errorf("failed to build datafeed file map: %w", err)
+	}
+
+	datafeedsJSONFiles = jsonFiles
+	datafeedsFiles = files
+	datafeedsFileMap = fileMap
+	return nil
+}
+
+func runDatafeedsRefresher() {
+	ticker := time.NewTicker(datafeedsRefreshInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := refreshDatafeeds(); err != nil {
+			log.Printf("datafeeds refresh failed: %v", err)
+		}
 	}
 }
