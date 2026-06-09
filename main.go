@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,13 @@ func main() {
 		log.Fatalf("failed to load datafeeds: %v", err)
 	}
 
+	if os.Getenv("LOCATIONS_API_KEY") == "" {
+		log.Println("Generating initial mock vehicle positions...")
+		if err := generateMockVehiclePositions(); err != nil {
+			log.Printf("Failed to generate mock vehicle positions: %v", err)
+		}
+	}
+
 	go runDatafeedsRefresher()
 	go runVehiclePositionsRefresher()
 	go runTripUpdatesRefresher()
@@ -80,15 +88,29 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tripupdates", tripUpdatesHandler)
 	mux.HandleFunc("/vehiclepositions", vehiclePositionsHandler)
+	mux.HandleFunc("/blockschedule", blockScheduleHandler)
 	mux.HandleFunc("/datafeeds/zip", datafeedsZipHandler)
 	mux.HandleFunc("/datafeeds", datafeedsGTFSIndexHandler)
 	mux.HandleFunc("/datafeeds/json", datafeedsJSONIndexHandler)
 	mux.HandleFunc("/datafeeds/json/", datafeedsJSONFileHandler)
 	mux.HandleFunc("/datafeeds/", datafeedsGTFSFileHandler)
 
+	corsHandler := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+
 	server := &http.Server{
 		Addr:              ":8080",
-		Handler:           mux,
+		Handler:           corsHandler(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -211,6 +233,141 @@ func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func blockScheduleHandler(w http.ResponseWriter, r *http.Request) {
+	vehicleID := r.URL.Query().Get("vehicle_id")
+	tripID := r.URL.Query().Get("trip_id")
+
+	var targetTripID string
+
+	if tripID != "" {
+		targetTripID = tripID
+	} else if vehicleID != "" {
+		vehiclePositionsCacheMu.RLock()
+		vehiclePayload := vehiclePositionsCachePayload
+		vehiclePositionsCacheMu.RUnlock()
+
+		if vehiclePayload == nil {
+			http.Error(w, "vehicle positions not available", http.StatusServiceUnavailable)
+			return
+		}
+
+		var vehicleFeed gtfs.FeedMessage
+		if err := proto.Unmarshal(vehiclePayload, &vehicleFeed); err != nil {
+			http.Error(w, "failed to parse vehicle positions", http.StatusInternalServerError)
+			return
+		}
+
+		for _, entity := range vehicleFeed.Entity {
+			vehicle := entity.GetVehicle()
+			if vehicle == nil {
+				continue
+			}
+			v := vehicle.GetVehicle()
+			if v == nil {
+				continue
+			}
+			if v.GetId() == vehicleID || v.GetLabel() == vehicleID || entity.GetId() == vehicleID {
+				trip := vehicle.GetTrip()
+				if trip != nil {
+					targetTripID = trip.GetTripId()
+				}
+				break
+			}
+		}
+
+		if targetTripID == "" {
+			http.Error(w, "vehicle not found", http.StatusNotFound)
+			return
+		}
+	} else {
+		http.Error(w, "vehicle_id or trip_id query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	tripsData := loadTripsData()
+	tripInfo, ok := tripsData[targetTripID]
+	if !ok {
+		http.Error(w, "trip not found in GTFS", http.StatusNotFound)
+		return
+	}
+
+	blockID := tripInfo.block_id
+	serviceID := tripInfo.service_id
+
+	if blockID == "" {
+		http.Error(w, "vehicle has no block assignment", http.StatusNotFound)
+		return
+	}
+
+	blockTrips := []TripInfo{}
+	for _, t := range tripsData {
+		if t.block_id == blockID && t.service_id == serviceID {
+			blockTrips = append(blockTrips, t)
+		}
+	}
+
+	sort.Slice(blockTrips, func(i, j int) bool {
+		return blockTrips[i].trip_start_time < blockTrips[j].trip_start_time
+	})
+
+	stopTimesData := loadStopTimesData()
+	stopsData := loadStopsData()
+
+	type BlockScheduleResponse struct {
+		BlockInfo struct {
+			BlockID   string `json:"block_id"`
+			ServiceID string `json:"service_id"`
+		} `json:"block_info"`
+		Schedule []BlockScheduleEntry `json:"schedule"`
+	}
+
+	blockSchedule := BlockScheduleResponse{}
+	blockSchedule.BlockInfo.BlockID = blockID
+	blockSchedule.BlockInfo.ServiceID = serviceID
+
+	for _, trip := range blockTrips {
+		stopTimes := stopTimesData[trip.trip_id]
+		sort.Slice(stopTimes, func(i, j int) bool {
+			return stopTimes[i].stop_sequence < stopTimes[j].stop_sequence
+		})
+
+		var startStopName, endStopName string
+		if len(stopTimes) > 0 {
+			if startStop, ok := stopsData[stopTimes[0].stop_id]; ok {
+				startStopName = startStop.stop_name
+			}
+			if endStop, ok := stopsData[stopTimes[len(stopTimes)-1].stop_id]; ok {
+				endStopName = endStop.stop_name
+			}
+		}
+
+		entry := BlockScheduleEntry{
+			TripID:               trip.trip_id,
+			RouteID:              trip.route_id,
+			RouteShortName:       getRouteShortName(trip.route_id),
+			RouteLongName:        getRouteLongName(trip.route_id),
+			DirectionID:          trip.direction_id,
+			StartTime:            trip.trip_start_time,
+			EndTime:              trip.trip_end_time,
+			HeadSign:             trip.trip_headsign,
+			StartStopName:        startStopName,
+			EndStopName:          endStopName,
+			ShapeID:              trip.shape_id,
+			WheelchairAccessible: trip.wheelchair_accessible,
+			BikesAllowed:         trip.bikes_allowed,
+		}
+		blockSchedule.Schedule = append(blockSchedule.Schedule, entry)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(blockSchedule); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
 func runVehiclePositionsRefresher() {
 	if err := refreshVehiclePositions(); err != nil {
 		log.Printf("vehicle positions refresh failed: %v", err)
@@ -228,7 +385,8 @@ func runVehiclePositionsRefresher() {
 func refreshVehiclePositions() error {
 	apiKey := os.Getenv("LOCATIONS_API_KEY")
 	if apiKey == "" {
-		return fmt.Errorf("LOCATIONS_API_KEY env var is not set")
+		log.Println("LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS")
+		return generateMockVehiclePositions()
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -274,6 +432,96 @@ func refreshVehiclePositions() error {
 	vehiclePositionsCacheMu.Unlock()
 
 	return nil
+}
+
+func generateMockVehiclePositions() error {
+	tripsData := loadTripsData()
+	if len(tripsData) == 0 {
+		return fmt.Errorf("no trips data available for mock vehicle positions")
+	}
+
+	var feed gtfs.FeedMessage
+	feed.Header = &gtfs.FeedHeader{
+		GtfsRealtimeVersion: proto.String("1.0"),
+		Incrementality:      gtfs.FeedHeader_FULL_DATASET.Enum(),
+		Timestamp:           proto.Uint64(uint64(time.Now().Unix())),
+	}
+
+	var entities []*gtfs.FeedEntity
+	count := 0
+	for _, trip := range tripsData {
+		if count >= 200 {
+			break
+		}
+		if trip.route_id == "" {
+			continue
+		}
+
+		stopTimes := loadStopTimesData()
+		times := stopTimes[trip.trip_id]
+		if len(times) == 0 {
+			continue
+		}
+
+		stopsData := loadStopsData()
+		firstStop := stopsData[times[0].stop_id]
+		if firstStop == (StopInfo{}) {
+			continue
+		}
+
+		lat, _ := strconv.ParseFloat(firstStop.stop_lat, 64)
+		lon, _ := strconv.ParseFloat(firstStop.stop_lon, 64)
+		if lat == 0 && lon == 0 {
+			continue
+		}
+
+		entity := &gtfs.FeedEntity{
+			Id: proto.String(fmt.Sprintf("mock-%d", count)),
+			Vehicle: &gtfs.VehiclePosition{
+				Trip: &gtfs.TripDescriptor{
+					TripId:      proto.String(trip.trip_id),
+					RouteId:     proto.String(trip.route_id),
+					DirectionId: proto.Uint32(uint32(parseDirection(trip.direction_id))),
+				},
+				Vehicle: &gtfs.VehicleDescriptor{
+					Id:    proto.String(fmt.Sprintf("mock-%d", count)),
+					Label: proto.String(fmt.Sprintf("mock-%d", count)),
+				},
+				Position: &gtfs.Position{
+					Latitude:  proto.Float32(float32(lat)),
+					Longitude: proto.Float32(float32(lon)),
+				},
+				CurrentStopSequence: proto.Uint32(1),
+				CurrentStatus:       gtfs.VehiclePosition_IN_TRANSIT_TO.Enum(),
+				Timestamp:           proto.Uint64(uint64(time.Now().Unix())),
+			},
+		}
+		entities = append(entities, entity)
+		count++
+	}
+
+	feed.Entity = entities
+
+	marshaler := protojson.MarshalOptions{Indent: "  "}
+	payload, err := marshaler.Marshal(&feed)
+	if err != nil {
+		return fmt.Errorf("failed to encode mock response: %w", err)
+	}
+
+	vehiclePositionsCacheMu.Lock()
+	vehiclePositionsCachePayload = payload
+	vehiclePositionsCacheErr = nil
+	vehiclePositionsCacheTime = time.Now()
+	vehiclePositionsCacheMu.Unlock()
+
+	log.Printf("Generated %d mock vehicle positions", len(entities))
+	return nil
+}
+
+func parseDirection(dir string) int32 {
+	var d int32
+	fmt.Sscanf(dir, "%d", &d)
+	return d
 }
 
 func datafeedsZipHandler(w http.ResponseWriter, r *http.Request) {
@@ -683,11 +931,20 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 }
 
 func refreshDatafeeds() error {
-	if err := downloadDatafeed(datafeedsFilePath); err != nil {
-		return fmt.Errorf("failed to download datafeed: %w", err)
+	if _, err := os.Stat(datafeedsFilePath); err == nil {
+		log.Println("Using existing datafeed file")
+	} else {
+		if err := downloadDatafeed(datafeedsFilePath); err != nil {
+			return fmt.Errorf("failed to download datafeed: %w", err)
+		}
 	}
-	if err := unzipDatafeed(datafeedsFilePath, datafeedsDir); err != nil {
-		return fmt.Errorf("failed to unzip datafeed: %w", err)
+
+	if _, err := os.Stat(datafeedsDir); err == nil {
+		log.Println("Using existing extracted datafeed directory")
+	} else {
+		if err := unzipDatafeed(datafeedsFilePath, datafeedsDir); err != nil {
+			return fmt.Errorf("failed to unzip datafeed: %w", err)
+		}
 	}
 
 	jsonFiles, err := indexJSONFiles(datafeedsDir)
@@ -709,6 +966,292 @@ func refreshDatafeeds() error {
 	datafeedsFiles = files
 	datafeedsFileMap = fileMap
 	return nil
+}
+
+type TripInfo struct {
+	trip_id               string
+	route_id              string
+	service_id            string
+	trip_headsign         string
+	direction_id          string
+	shape_id              string
+	block_id              string
+	trip_short_name       string
+	wheelchair_accessible string
+	bikes_allowed         string
+	trip_start_time       string
+	trip_end_time         string
+}
+
+type StopTimeInfo struct {
+	trip_id        string
+	arrival_time   string
+	departure_time string
+	stop_id        string
+	stop_sequence  int
+}
+
+type StopInfo struct {
+	stop_id   string
+	stop_name string
+	stop_lat  string
+	stop_lon  string
+}
+
+type BlockScheduleEntry struct {
+	TripID               string `json:"trip_id"`
+	RouteID              string `json:"route_id"`
+	RouteShortName       string `json:"route_short_name"`
+	RouteLongName        string `json:"route_long_name"`
+	DirectionID          string `json:"direction_id"`
+	StartTime            string `json:"start_time"`
+	EndTime              string `json:"end_time"`
+	HeadSign             string `json:"headsign"`
+	StartStopName        string `json:"start_stop_name"`
+	EndStopName          string `json:"end_stop_name"`
+	ShapeID              string `json:"shape_id"`
+	WheelchairAccessible string `json:"wheelchair_accessible"`
+	BikesAllowed         string `json:"bikes_allowed"`
+}
+
+var tripsCache map[string]TripInfo
+var stopTimesCache map[string][]StopTimeInfo
+var stopsCache map[string]StopInfo
+
+type RouteInfo struct {
+	shortName string
+	longName  string
+}
+
+var routesCache map[string]RouteInfo
+
+func loadTripsData() map[string]TripInfo {
+	if tripsCache != nil {
+		return tripsCache
+	}
+	tripsCache = make(map[string]TripInfo)
+	filePath := filepath.Join(datafeedsDir, "trips.txt")
+	if _, err := os.Stat(filePath); err == nil {
+		file, err := os.Open(filePath)
+		if err == nil {
+			defer file.Close()
+			reader := csv.NewReader(file)
+			reader.FieldsPerRecord = -1
+			headers, _ := reader.Read()
+			headerMap := make(map[string]int)
+			for i, h := range headers {
+				headerMap[h] = i
+			}
+			for {
+				record, err := reader.Read()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					continue
+				}
+				get := func(field string) string {
+					if idx, ok := headerMap[field]; ok && idx < len(record) {
+						return record[idx]
+					}
+					return ""
+				}
+				trip := TripInfo{
+					trip_id:               get("trip_id"),
+					route_id:              get("route_id"),
+					service_id:            get("service_id"),
+					trip_headsign:         get("trip_headsign"),
+					direction_id:          get("direction_id"),
+					shape_id:              get("shape_id"),
+					block_id:              get("block_id"),
+					trip_short_name:       get("trip_short_name"),
+					wheelchair_accessible: get("wheelchair_accessible"),
+					bikes_allowed:         get("bikes_allowed"),
+					trip_start_time:       "",
+					trip_end_time:         "",
+				}
+				if trip.trip_id != "" {
+					tripsCache[trip.trip_id] = trip
+				}
+			}
+		}
+	}
+
+	stopTimes := loadStopTimesData()
+	log.Printf("Loaded %d stop_times entries for %d trips", len(stopTimes), len(tripsCache))
+	for tripID, times := range stopTimes {
+		if len(times) > 0 {
+			if trip, ok := tripsCache[tripID]; ok {
+				trip.trip_start_time = times[0].departure_time
+				trip.trip_end_time = times[len(times)-1].arrival_time
+				tripsCache[tripID] = trip
+			}
+		}
+	}
+	log.Printf("Updated trips with start/end times")
+
+	return tripsCache
+}
+
+func loadStopTimesData() map[string][]StopTimeInfo {
+	if stopTimesCache != nil {
+		return stopTimesCache
+	}
+	stopTimesCache = make(map[string][]StopTimeInfo)
+	filePath := filepath.Join(datafeedsDir, "stop_times.txt")
+	if _, err := os.Stat(filePath); err == nil {
+		file, err := os.Open(filePath)
+		if err == nil {
+			defer file.Close()
+			reader := csv.NewReader(file)
+			reader.FieldsPerRecord = -1
+			headers, _ := reader.Read()
+			headerMap := make(map[string]int)
+			for i, h := range headers {
+				headerMap[h] = i
+			}
+			for {
+				record, err := reader.Read()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					continue
+				}
+				get := func(field string) string {
+					if idx, ok := headerMap[field]; ok && idx < len(record) {
+						return record[idx]
+					}
+					return ""
+				}
+				seq := 0
+				if s := get("stop_sequence"); s != "" {
+					fmt.Sscanf(s, "%d", &seq)
+				}
+				st := StopTimeInfo{
+					trip_id:        get("trip_id"),
+					arrival_time:   get("arrival_time"),
+					departure_time: get("departure_time"),
+					stop_id:        get("stop_id"),
+					stop_sequence:  seq,
+				}
+				if st.trip_id != "" {
+					stopTimesCache[st.trip_id] = append(stopTimesCache[st.trip_id], st)
+				}
+			}
+		}
+	}
+	return stopTimesCache
+}
+
+func loadStopsData() map[string]StopInfo {
+	if stopsCache != nil {
+		return stopsCache
+	}
+	stopsCache = make(map[string]StopInfo)
+	filePath := filepath.Join(datafeedsDir, "stops.txt")
+	if _, err := os.Stat(filePath); err == nil {
+		file, err := os.Open(filePath)
+		if err == nil {
+			defer file.Close()
+			reader := csv.NewReader(file)
+			reader.FieldsPerRecord = -1
+			headers, _ := reader.Read()
+			headerMap := make(map[string]int)
+			for i, h := range headers {
+				headerMap[h] = i
+			}
+			for {
+				record, err := reader.Read()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					continue
+				}
+				get := func(field string) string {
+					if idx, ok := headerMap[field]; ok && idx < len(record) {
+						return record[idx]
+					}
+					return ""
+				}
+				stop := StopInfo{
+					stop_id:   get("stop_id"),
+					stop_name: get("stop_name"),
+					stop_lat:  get("stop_lat"),
+					stop_lon:  get("stop_lon"),
+				}
+				if stop.stop_id != "" {
+					stopsCache[stop.stop_id] = stop
+				}
+			}
+		}
+	}
+	return stopsCache
+}
+
+func loadRoutesData() {
+	if routesCache != nil {
+		return
+	}
+	routesCache = make(map[string]RouteInfo)
+	filePath := filepath.Join(datafeedsDir, "routes.txt")
+	if _, err := os.Stat(filePath); err == nil {
+		file, err := os.Open(filePath)
+		if err == nil {
+			defer file.Close()
+			reader := csv.NewReader(file)
+			reader.FieldsPerRecord = -1
+			headers, _ := reader.Read()
+			headerMap := make(map[string]int)
+			for i, h := range headers {
+				headerMap[h] = i
+			}
+			for {
+				record, err := reader.Read()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					continue
+				}
+				get := func(field string) string {
+					if idx, ok := headerMap[field]; ok && idx < len(record) {
+						return record[idx]
+					}
+					return ""
+				}
+				routeID := get("route_id")
+				routeShortName := get("route_short_name")
+				routeLongName := get("route_long_name")
+				if routeID != "" && routeShortName != "" {
+					routesCache[routeID] = RouteInfo{shortName: routeShortName, longName: routeLongName}
+				}
+			}
+		}
+	}
+}
+
+func getRouteShortName(routeID string) string {
+	loadRoutesData()
+	if route, ok := routesCache[routeID]; ok {
+		return route.shortName
+	}
+	if idx := strings.LastIndex(routeID, ":"); idx >= 0 {
+		return routeID[idx+1:]
+	}
+	return routeID
+}
+
+func getRouteLongName(routeID string) string {
+	loadRoutesData()
+	if route, ok := routesCache[routeID]; ok {
+		return route.longName
+	}
+	if idx := strings.LastIndex(routeID, ":"); idx >= 0 {
+		return routeID[idx+1:]
+	}
+	return routeID
 }
 
 func runDatafeedsRefresher() {
