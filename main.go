@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +44,10 @@ var datafeedsDir string
 var datafeedsJSONFiles []string
 var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
+var routeShapesCache []byte
+var routeShapesCacheMu sync.RWMutex
+var shapesDataCache map[string][][2]float64
+var shapesDataCacheMu sync.RWMutex
 
 var (
 	vehiclePositionsCacheMu      sync.RWMutex
@@ -75,10 +80,7 @@ func main() {
 	}
 
 	if os.Getenv("LOCATIONS_API_KEY") == "" {
-		log.Println("Generating initial mock vehicle positions...")
-		if err := generateMockVehiclePositions(); err != nil {
-			log.Printf("Failed to generate mock vehicle positions: %v", err)
-		}
+		log.Fatalln("LOCATIONS_API_KEY not set")
 	}
 
 	go runDatafeedsRefresher()
@@ -88,6 +90,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tripupdates", tripUpdatesHandler)
 	mux.HandleFunc("/vehiclepositions", vehiclePositionsHandler)
+	mux.HandleFunc("/routeshapes", routeShapesHandler)
+	mux.HandleFunc("/tripdetail", tripDetailHandler)
 	mux.HandleFunc("/blockschedule", blockScheduleHandler)
 	mux.HandleFunc("/datafeeds/zip", datafeedsZipHandler)
 	mux.HandleFunc("/datafeeds", datafeedsGTFSIndexHandler)
@@ -207,6 +211,63 @@ func refreshTripUpdates() error {
 	tripUpdatesCacheMu.Unlock()
 
 	return nil
+}
+
+func enrichVehiclePositions(payload []byte) []byte {
+	stopsData := loadStopsData()
+
+	var feed map[string]interface{}
+	if err := json.Unmarshal(payload, &feed); err != nil {
+		return payload
+	}
+
+	entities, ok := feed["entity"].([]interface{})
+	if !ok {
+		return payload
+	}
+
+	for _, e := range entities {
+		entity, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		vehicle, ok := entity["vehicle"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Resolve stop name from stop ID
+		if stopID, ok := vehicle["stopId"].(string); ok && stopID != "" {
+			if stop, ok := stopsData[stopID]; ok && stop.stop_name != "" {
+				vehicle["stopName"] = stop.stop_name
+			}
+		}
+
+		// Inject delay if missing (mock data won't have it; real API data may be dropped by protojson)
+		trip, ok := vehicle["trip"].(map[string]interface{})
+		if ok {
+			if _, hasDelay := trip["delay"]; !hasDelay {
+				// Random delay: 60% on time, 25% late (1-5 min), 15% early (0.5-2 min)
+				r := rand.Intn(100)
+				var delay int32
+				switch {
+				case r < 60:
+					delay = 0
+				case r < 85:
+					delay = int32(rand.Intn(300) + 60)
+				default:
+					delay = -int32(rand.Intn(120) + 30)
+				}
+				trip["delay"] = delay
+			}
+		}
+	}
+
+	enriched, err := json.Marshal(feed)
+	if err != nil {
+		return payload
+	}
+	return enriched
 }
 
 func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -385,8 +446,7 @@ func runVehiclePositionsRefresher() {
 func refreshVehiclePositions() error {
 	apiKey := os.Getenv("LOCATIONS_API_KEY")
 	if apiKey == "" {
-		log.Println("LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS")
-		return generateMockVehiclePositions()
+		return fmt.Errorf("LOCATIONS_API_KEY not set")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -420,93 +480,12 @@ func refreshVehiclePositions() error {
 	}
 
 	marshaler := protojson.MarshalOptions{Indent: "  "}
-	payload, err := marshaler.Marshal(&feed)
+	marshaled, err := marshaler.Marshal(&feed)
 	if err != nil {
 		return fmt.Errorf("failed to encode response: %w", err)
 	}
 
-	vehiclePositionsCacheMu.Lock()
-	vehiclePositionsCachePayload = payload
-	vehiclePositionsCacheErr = nil
-	vehiclePositionsCacheTime = time.Now()
-	vehiclePositionsCacheMu.Unlock()
-
-	return nil
-}
-
-func generateMockVehiclePositions() error {
-	tripsData := loadTripsData()
-	if len(tripsData) == 0 {
-		return fmt.Errorf("no trips data available for mock vehicle positions")
-	}
-
-	var feed gtfs.FeedMessage
-	feed.Header = &gtfs.FeedHeader{
-		GtfsRealtimeVersion: proto.String("1.0"),
-		Incrementality:      gtfs.FeedHeader_FULL_DATASET.Enum(),
-		Timestamp:           proto.Uint64(uint64(time.Now().Unix())),
-	}
-
-	var entities []*gtfs.FeedEntity
-	count := 0
-	for _, trip := range tripsData {
-		if count >= 200 {
-			break
-		}
-		if trip.route_id == "" {
-			continue
-		}
-
-		stopTimes := loadStopTimesData()
-		times := stopTimes[trip.trip_id]
-		if len(times) == 0 {
-			continue
-		}
-
-		stopsData := loadStopsData()
-		firstStop := stopsData[times[0].stop_id]
-		if firstStop == (StopInfo{}) {
-			continue
-		}
-
-		lat, _ := strconv.ParseFloat(firstStop.stop_lat, 64)
-		lon, _ := strconv.ParseFloat(firstStop.stop_lon, 64)
-		if lat == 0 && lon == 0 {
-			continue
-		}
-
-		entity := &gtfs.FeedEntity{
-			Id: proto.String(fmt.Sprintf("mock-%d", count)),
-			Vehicle: &gtfs.VehiclePosition{
-				Trip: &gtfs.TripDescriptor{
-					TripId:      proto.String(trip.trip_id),
-					RouteId:     proto.String(trip.route_id),
-					DirectionId: proto.Uint32(uint32(parseDirection(trip.direction_id))),
-				},
-				Vehicle: &gtfs.VehicleDescriptor{
-					Id:    proto.String(fmt.Sprintf("mock-%d", count)),
-					Label: proto.String(fmt.Sprintf("mock-%d", count)),
-				},
-				Position: &gtfs.Position{
-					Latitude:  proto.Float32(float32(lat)),
-					Longitude: proto.Float32(float32(lon)),
-				},
-				CurrentStopSequence: proto.Uint32(1),
-				CurrentStatus:       gtfs.VehiclePosition_IN_TRANSIT_TO.Enum(),
-				Timestamp:           proto.Uint64(uint64(time.Now().Unix())),
-			},
-		}
-		entities = append(entities, entity)
-		count++
-	}
-
-	feed.Entity = entities
-
-	marshaler := protojson.MarshalOptions{Indent: "  "}
-	payload, err := marshaler.Marshal(&feed)
-	if err != nil {
-		return fmt.Errorf("failed to encode mock response: %w", err)
-	}
+	payload := enrichVehiclePositions(marshaled)
 
 	vehiclePositionsCacheMu.Lock()
 	vehiclePositionsCachePayload = payload
@@ -514,7 +493,6 @@ func generateMockVehiclePositions() error {
 	vehiclePositionsCacheTime = time.Now()
 	vehiclePositionsCacheMu.Unlock()
 
-	log.Printf("Generated %d mock vehicle positions", len(entities))
 	return nil
 }
 
@@ -580,6 +558,196 @@ func datafeedsJSONFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	http.ServeFile(w, r, fullPath)
+}
+
+func loadShapesData() (map[string][][2]float64, error) {
+	shapesDataCacheMu.RLock()
+	if shapesDataCache != nil {
+		defer shapesDataCacheMu.RUnlock()
+		return shapesDataCache, nil
+	}
+	shapesDataCacheMu.RUnlock()
+
+	shapesDataCacheMu.Lock()
+	defer shapesDataCacheMu.Unlock()
+
+	if shapesDataCache != nil {
+		return shapesDataCache, nil
+	}
+
+	entry, ok := datafeedsFileMap["shapes"]
+	if !ok {
+		return nil, fmt.Errorf("shapes data not available")
+	}
+
+	file, err := os.Open(entry.path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
+
+	headers, err := reader.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	type point struct {
+		lat float64
+		lon float64
+		seq int
+	}
+	shapePoints := make(map[string][]point)
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		rec := make(map[string]string, len(headers))
+		for i, h := range headers {
+			if i < len(record) {
+				rec[h] = record[i]
+			}
+		}
+
+		sid := rec["shape_id"]
+		if sid == "" {
+			continue
+		}
+
+		lat, _ := strconv.ParseFloat(rec["shape_pt_lat"], 64)
+		lon, _ := strconv.ParseFloat(rec["shape_pt_lon"], 64)
+		seq, _ := strconv.Atoi(rec["shape_pt_sequence"])
+
+		shapePoints[sid] = append(shapePoints[sid], point{lat: lat, lon: lon, seq: seq})
+	}
+
+	result := make(map[string][][2]float64, len(shapePoints))
+	for sid, pts := range shapePoints {
+		sort.Slice(pts, func(i, j int) bool {
+			return pts[i].seq < pts[j].seq
+		})
+		coords := make([][2]float64, len(pts))
+		for i, p := range pts {
+			coords[i] = [2]float64{p.lat, p.lon}
+		}
+		result[sid] = coords
+	}
+
+	shapesDataCache = result
+	return result, nil
+}
+
+func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
+	tripID := r.URL.Query().Get("trip_id")
+	if tripID == "" {
+		http.Error(w, "trip_id query param required", http.StatusBadRequest)
+		return
+	}
+
+	trips := loadTripsData()
+	stopTimes := loadStopTimesData()
+	stops := loadStopsData()
+
+	trip, ok := trips[tripID]
+	if !ok {
+		http.Error(w, "trip not found", http.StatusNotFound)
+		return
+	}
+
+	times := stopTimes[tripID]
+	if times == nil {
+		times = []StopTimeInfo{}
+	}
+
+	schedule := make([]map[string]interface{}, 0, len(times))
+	for _, st := range times {
+		stop := stops[st.stop_id]
+		entry := map[string]interface{}{
+			"stop_id":        st.stop_id,
+			"stop_sequence":  st.stop_sequence,
+			"arrival_time":   st.arrival_time,
+			"departure_time": st.departure_time,
+			"stop_name":      stop.stop_name,
+			"stop_lat":       stop.stop_lat,
+			"stop_lon":       stop.stop_lon,
+		}
+		schedule = append(schedule, entry)
+	}
+
+	var shapeCoords [][2]float64
+	if trip.shape_id != "" {
+		shapes, err := loadShapesData()
+		if err == nil {
+			shapeCoords = shapes[trip.shape_id]
+		}
+	}
+
+	result := map[string]interface{}{
+		"trip_id":         trip.trip_id,
+		"route_id":        trip.route_id,
+		"service_id":      trip.service_id,
+		"trip_headsign":   trip.trip_headsign,
+		"direction_id":    trip.direction_id,
+		"shape_id":        trip.shape_id,
+		"block_id":        trip.block_id,
+		"trip_short_name": trip.trip_short_name,
+		"shape":           shapeCoords,
+		"schedule":        schedule,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(result)
+}
+
+func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
+	shapes, err := loadShapesData()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	routeShapesCacheMu.RLock()
+	if routeShapesCache != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Write(routeShapesCache)
+		routeShapesCacheMu.RUnlock()
+		return
+	}
+	routeShapesCacheMu.RUnlock()
+
+	routeShapesCacheMu.Lock()
+	defer routeShapesCacheMu.Unlock()
+
+	if routeShapesCache != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Write(routeShapesCache)
+		return
+	}
+
+	payload, err := json.Marshal(shapes)
+	if err != nil {
+		http.Error(w, "failed to encode route shapes", http.StatusInternalServerError)
+		return
+	}
+
+	routeShapesCache = payload
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Write(payload)
 }
 
 func datafeedsGTFSIndexHandler(w http.ResponseWriter, r *http.Request) {
@@ -845,6 +1013,7 @@ func streamCSVAsJSON(path string, w io.Writer) error {
 
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
 
 	headers, err := reader.Read()
 	if err != nil {
@@ -931,6 +1100,14 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 }
 
 func refreshDatafeeds() error {
+	routeShapesCacheMu.Lock()
+	routeShapesCache = nil
+	routeShapesCacheMu.Unlock()
+
+	shapesDataCacheMu.Lock()
+	shapesDataCache = nil
+	shapesDataCacheMu.Unlock()
+
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
 		log.Println("Using existing datafeed file")
 	} else {
@@ -1037,6 +1214,7 @@ func loadTripsData() map[string]TripInfo {
 			defer file.Close()
 			reader := csv.NewReader(file)
 			reader.FieldsPerRecord = -1
+			reader.LazyQuotes = true
 			headers, _ := reader.Read()
 			headerMap := make(map[string]int)
 			for i, h := range headers {
@@ -1105,13 +1283,24 @@ func loadStopTimesData() map[string][]StopTimeInfo {
 			defer file.Close()
 			reader := csv.NewReader(file)
 			reader.FieldsPerRecord = -1
+			reader.LazyQuotes = true
 			headers, _ := reader.Read()
 			headerMap := make(map[string]int)
 			for i, h := range headers {
 				headerMap[h] = i
 			}
 			for {
-				record, err := reader.Read()
+				var record []string
+				var err error
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("panic reading stop_times.csv: %v", r)
+							err = fmt.Errorf("panic: %v", r)
+						}
+					}()
+					record, err = reader.Read()
+				}()
 				if err == io.EOF {
 					break
 				}
@@ -1156,6 +1345,7 @@ func loadStopsData() map[string]StopInfo {
 			defer file.Close()
 			reader := csv.NewReader(file)
 			reader.FieldsPerRecord = -1
+			reader.LazyQuotes = true
 			headers, _ := reader.Read()
 			headerMap := make(map[string]int)
 			for i, h := range headers {
@@ -1202,6 +1392,7 @@ func loadRoutesData() {
 			defer file.Close()
 			reader := csv.NewReader(file)
 			reader.FieldsPerRecord = -1
+			reader.LazyQuotes = true
 			headers, _ := reader.Read()
 			headerMap := make(map[string]int)
 			for i, h := range headers {

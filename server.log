@@ -1,35 +1,7 @@
-2026/06/08 16:16:57 Using existing datafeed file
-2026/06/08 16:16:57 Using existing extracted datafeed directory
-2026/06/08 16:16:57 Generating initial mock vehicle positions...
-2026/06/08 16:17:01 Loaded 129583 stop_times entries for 129583 trips
-2026/06/08 16:17:01 Updated trips with start/end times
-2026/06/08 16:17:01 Generated 200 mock vehicle positions
-2026/06/08 16:17:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:17:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:17:01 listening on :8080
-2026/06/08 16:17:01 Generated 200 mock vehicle positions
-2026/06/08 16:17:25 http: superfluous response.WriteHeader call from main.datafeedsGTFSFileHandler (main.go:632)
-2026/06/08 16:17:40 http: superfluous response.WriteHeader call from main.datafeedsGTFSFileHandler (main.go:632)
-2026/06/08 16:18:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:18:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:18:01 Generated 200 mock vehicle positions
-2026/06/08 16:19:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:19:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:19:01 Generated 200 mock vehicle positions
-2026/06/08 16:20:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:20:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:20:01 Generated 200 mock vehicle positions
-2026/06/08 16:21:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:21:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:21:01 Generated 200 mock vehicle positions
-2026/06/08 16:22:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:22:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:22:01 Generated 200 mock vehicle positions
-2026/06/08 16:22:50 http: superfluous response.WriteHeader call from main.datafeedsGTFSFileHandler (main.go:632)
-2026/06/08 16:23:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:23:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:23:01 Generated 200 mock vehicle positions
-2026/06/08 16:24:01 LOCATIONS_API_KEY not set, generating mock vehicle positions from GTFS
-2026/06/08 16:24:01 trip updates refresh failed: TRIP_UPDATES_API_KEY env var is not set
-2026/06/08 16:24:01 Generated 200 mock vehicle positions
-signal: killed
+2026/06/09 12:25:17 Using existing datafeed file
+2026/06/09 12:25:17 Using existing extracted datafeed directory
+2026/06/09 12:25:17 listening on :8080
+2026/06/09 12:25:46 Loaded 129583 stop_times entries for 129583 trips
+2026/06/09 12:25:46 Updated trips with start/end times
+2026/06/09 12:29:33 vehicle positions refresh failed: failed to fetch vehicle positions: Get "http://api.511.org/transit/vehiclepositions?api_key=e19beefe-495b-4124-ba66-83eecde12e1f&agency=RG": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+2026/06/09 12:30:49 http: superfluous response.WriteHeader call from main.datafeedsGTFSFileHandler (main.go:801)
