@@ -1191,236 +1191,236 @@ type BlockScheduleEntry struct {
 	BikesAllowed         string `json:"bikes_allowed"`
 }
 
-var tripsCache map[string]TripInfo
-var stopTimesCache map[string][]StopTimeInfo
-var stopsCache map[string]StopInfo
+var (
+	tripsCache     map[string]TripInfo
+	stopTimesCache map[string][]StopTimeInfo
+	stopsCache     map[string]StopInfo
+	routesCache    map[string]RouteInfo
+	tripsOnce      sync.Once
+	stopTimesOnce  sync.Once
+	stopsOnce      sync.Once
+	routesOnce     sync.Once
+)
 
 type RouteInfo struct {
 	shortName string
 	longName  string
 }
 
-var routesCache map[string]RouteInfo
-
 func loadTripsData() map[string]TripInfo {
-	if tripsCache != nil {
-		return tripsCache
-	}
-	tripsCache = make(map[string]TripInfo)
-	filePath := filepath.Join(datafeedsDir, "trips.txt")
-	if _, err := os.Stat(filePath); err == nil {
-		file, err := os.Open(filePath)
-		if err == nil {
-			defer file.Close()
-			reader := csv.NewReader(file)
-			reader.FieldsPerRecord = -1
-			reader.LazyQuotes = true
-			headers, _ := reader.Read()
-			headerMap := make(map[string]int)
-			for i, h := range headers {
-				headerMap[h] = i
-			}
-			for {
-				record, err := reader.Read()
-				if err == io.EOF {
-					break
+	tripsOnce.Do(func() {
+		tripsCache = make(map[string]TripInfo)
+		filePath := filepath.Join(datafeedsDir, "trips.txt")
+		if _, err := os.Stat(filePath); err == nil {
+			file, err := os.Open(filePath)
+			if err == nil {
+				defer file.Close()
+				reader := csv.NewReader(file)
+				reader.FieldsPerRecord = -1
+				reader.LazyQuotes = true
+				headers, _ := reader.Read()
+				headerMap := make(map[string]int)
+				for i, h := range headers {
+					headerMap[h] = i
 				}
-				if err != nil {
-					continue
-				}
-				get := func(field string) string {
-					if idx, ok := headerMap[field]; ok && idx < len(record) {
-						return record[idx]
+				for {
+					record, err := reader.Read()
+					if err == io.EOF {
+						break
 					}
-					return ""
-				}
-				trip := TripInfo{
-					trip_id:               get("trip_id"),
-					route_id:              get("route_id"),
-					service_id:            get("service_id"),
-					trip_headsign:         get("trip_headsign"),
-					direction_id:          get("direction_id"),
-					shape_id:              get("shape_id"),
-					block_id:              get("block_id"),
-					trip_short_name:       get("trip_short_name"),
-					wheelchair_accessible: get("wheelchair_accessible"),
-					bikes_allowed:         get("bikes_allowed"),
-					trip_start_time:       "",
-					trip_end_time:         "",
-				}
-				if trip.trip_id != "" {
-					tripsCache[trip.trip_id] = trip
+					if err != nil {
+						continue
+					}
+					get := func(field string) string {
+						if idx, ok := headerMap[field]; ok && idx < len(record) {
+							return record[idx]
+						}
+						return ""
+					}
+					trip := TripInfo{
+						trip_id:               get("trip_id"),
+						route_id:              get("route_id"),
+						service_id:            get("service_id"),
+						trip_headsign:         get("trip_headsign"),
+						direction_id:          get("direction_id"),
+						shape_id:              get("shape_id"),
+						block_id:              get("block_id"),
+						trip_short_name:       get("trip_short_name"),
+						wheelchair_accessible: get("wheelchair_accessible"),
+						bikes_allowed:         get("bikes_allowed"),
+						trip_start_time:       "",
+						trip_end_time:         "",
+					}
+					if trip.trip_id != "" {
+						tripsCache[trip.trip_id] = trip
+					}
 				}
 			}
 		}
-	}
-
-	stopTimes := loadStopTimesData()
-	log.Printf("Loaded %d stop_times entries for %d trips", len(stopTimes), len(tripsCache))
-	for tripID, times := range stopTimes {
-		if len(times) > 0 {
-			if trip, ok := tripsCache[tripID]; ok {
-				trip.trip_start_time = times[0].departure_time
-				trip.trip_end_time = times[len(times)-1].arrival_time
-				tripsCache[tripID] = trip
+		stopTimes := loadStopTimesData()
+		log.Printf("Loaded %d stop_times entries for %d trips", len(stopTimes), len(tripsCache))
+		for tripID, times := range stopTimes {
+			if len(times) > 0 {
+				if trip, ok := tripsCache[tripID]; ok {
+					trip.trip_start_time = times[0].departure_time
+					trip.trip_end_time = times[len(times)-1].arrival_time
+					tripsCache[tripID] = trip
+				}
 			}
 		}
-	}
-	log.Printf("Updated trips with start/end times")
+		log.Printf("Updated trips with start/end times")
+	})
 
 	return tripsCache
 }
 
 func loadStopTimesData() map[string][]StopTimeInfo {
-	if stopTimesCache != nil {
-		return stopTimesCache
-	}
-	stopTimesCache = make(map[string][]StopTimeInfo)
-	filePath := filepath.Join(datafeedsDir, "stop_times.txt")
-	if _, err := os.Stat(filePath); err == nil {
-		file, err := os.Open(filePath)
-		if err == nil {
-			defer file.Close()
-			reader := csv.NewReader(file)
-			reader.FieldsPerRecord = -1
-			reader.LazyQuotes = true
-			headers, _ := reader.Read()
-			headerMap := make(map[string]int)
-			for i, h := range headers {
-				headerMap[h] = i
-			}
-			for {
-				var record []string
-				var err error
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("panic reading stop_times.csv: %v", r)
-							err = fmt.Errorf("panic: %v", r)
-						}
+	stopTimesOnce.Do(func() {
+		stopTimesCache = make(map[string][]StopTimeInfo)
+		filePath := filepath.Join(datafeedsDir, "stop_times.txt")
+		if _, err := os.Stat(filePath); err == nil {
+			file, err := os.Open(filePath)
+			if err == nil {
+				defer file.Close()
+				reader := csv.NewReader(file)
+				reader.FieldsPerRecord = -1
+				reader.LazyQuotes = true
+				headers, _ := reader.Read()
+				headerMap := make(map[string]int)
+				for i, h := range headers {
+					headerMap[h] = i
+				}
+				for {
+					var record []string
+					var err error
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf("panic reading stop_times.csv: %v", r)
+								err = fmt.Errorf("panic: %v", r)
+							}
+						}()
+						record, err = reader.Read()
 					}()
-					record, err = reader.Read()
-				}()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					continue
-				}
-				get := func(field string) string {
-					if idx, ok := headerMap[field]; ok && idx < len(record) {
-						return record[idx]
+					if err == io.EOF {
+						break
 					}
-					return ""
-				}
-				seq := 0
-				if s := get("stop_sequence"); s != "" {
-					fmt.Sscanf(s, "%d", &seq)
-				}
-				st := StopTimeInfo{
-					trip_id:        get("trip_id"),
-					arrival_time:   get("arrival_time"),
-					departure_time: get("departure_time"),
-					stop_id:        get("stop_id"),
-					stop_sequence:  seq,
-				}
-				if st.trip_id != "" {
-					stopTimesCache[st.trip_id] = append(stopTimesCache[st.trip_id], st)
+					if err != nil {
+						continue
+					}
+					get := func(field string) string {
+						if idx, ok := headerMap[field]; ok && idx < len(record) {
+							return record[idx]
+						}
+						return ""
+					}
+					seq := 0
+					if s := get("stop_sequence"); s != "" {
+						fmt.Sscanf(s, "%d", &seq)
+					}
+					st := StopTimeInfo{
+						trip_id:        get("trip_id"),
+						arrival_time:   get("arrival_time"),
+						departure_time: get("departure_time"),
+						stop_id:        get("stop_id"),
+						stop_sequence:  seq,
+					}
+					if st.trip_id != "" {
+						stopTimesCache[st.trip_id] = append(stopTimesCache[st.trip_id], st)
+					}
 				}
 			}
 		}
-	}
+	})
 	return stopTimesCache
 }
 
 func loadStopsData() map[string]StopInfo {
-	if stopsCache != nil {
-		return stopsCache
-	}
-	stopsCache = make(map[string]StopInfo)
-	filePath := filepath.Join(datafeedsDir, "stops.txt")
-	if _, err := os.Stat(filePath); err == nil {
-		file, err := os.Open(filePath)
-		if err == nil {
-			defer file.Close()
-			reader := csv.NewReader(file)
-			reader.FieldsPerRecord = -1
-			reader.LazyQuotes = true
-			headers, _ := reader.Read()
-			headerMap := make(map[string]int)
-			for i, h := range headers {
-				headerMap[h] = i
-			}
-			for {
-				record, err := reader.Read()
-				if err == io.EOF {
-					break
+	stopsOnce.Do(func() {
+		stopsCache = make(map[string]StopInfo)
+		filePath := filepath.Join(datafeedsDir, "stops.txt")
+		if _, err := os.Stat(filePath); err == nil {
+			file, err := os.Open(filePath)
+			if err == nil {
+				defer file.Close()
+				reader := csv.NewReader(file)
+				reader.FieldsPerRecord = -1
+				reader.LazyQuotes = true
+				headers, _ := reader.Read()
+				headerMap := make(map[string]int)
+				for i, h := range headers {
+					headerMap[h] = i
 				}
-				if err != nil {
-					continue
-				}
-				get := func(field string) string {
-					if idx, ok := headerMap[field]; ok && idx < len(record) {
-						return record[idx]
+				for {
+					record, err := reader.Read()
+					if err == io.EOF {
+						break
 					}
-					return ""
-				}
-				stop := StopInfo{
-					stop_id:   get("stop_id"),
-					stop_name: get("stop_name"),
-					stop_lat:  get("stop_lat"),
-					stop_lon:  get("stop_lon"),
-				}
-				if stop.stop_id != "" {
-					stopsCache[stop.stop_id] = stop
+					if err != nil {
+						continue
+					}
+					get := func(field string) string {
+						if idx, ok := headerMap[field]; ok && idx < len(record) {
+							return record[idx]
+						}
+						return ""
+					}
+					stop := StopInfo{
+						stop_id:   get("stop_id"),
+						stop_name: get("stop_name"),
+						stop_lat:  get("stop_lat"),
+						stop_lon:  get("stop_lon"),
+					}
+					if stop.stop_id != "" {
+						stopsCache[stop.stop_id] = stop
+					}
 				}
 			}
 		}
-	}
+	})
 	return stopsCache
 }
 
 func loadRoutesData() {
-	if routesCache != nil {
-		return
-	}
-	routesCache = make(map[string]RouteInfo)
-	filePath := filepath.Join(datafeedsDir, "routes.txt")
-	if _, err := os.Stat(filePath); err == nil {
-		file, err := os.Open(filePath)
-		if err == nil {
-			defer file.Close()
-			reader := csv.NewReader(file)
-			reader.FieldsPerRecord = -1
-			reader.LazyQuotes = true
-			headers, _ := reader.Read()
-			headerMap := make(map[string]int)
-			for i, h := range headers {
-				headerMap[h] = i
-			}
-			for {
-				record, err := reader.Read()
-				if err == io.EOF {
-					break
+	routesOnce.Do(func() {
+		routesCache = make(map[string]RouteInfo)
+		filePath := filepath.Join(datafeedsDir, "routes.txt")
+		if _, err := os.Stat(filePath); err == nil {
+			file, err := os.Open(filePath)
+			if err == nil {
+				defer file.Close()
+				reader := csv.NewReader(file)
+				reader.FieldsPerRecord = -1
+				reader.LazyQuotes = true
+				headers, _ := reader.Read()
+				headerMap := make(map[string]int)
+				for i, h := range headers {
+					headerMap[h] = i
 				}
-				if err != nil {
-					continue
-				}
-				get := func(field string) string {
-					if idx, ok := headerMap[field]; ok && idx < len(record) {
-						return record[idx]
+				for {
+					record, err := reader.Read()
+					if err == io.EOF {
+						break
 					}
-					return ""
-				}
-				routeID := get("route_id")
-				routeShortName := get("route_short_name")
-				routeLongName := get("route_long_name")
-				if routeID != "" && routeShortName != "" {
-					routesCache[routeID] = RouteInfo{shortName: routeShortName, longName: routeLongName}
+					if err != nil {
+						continue
+					}
+					get := func(field string) string {
+						if idx, ok := headerMap[field]; ok && idx < len(record) {
+							return record[idx]
+						}
+						return ""
+					}
+					routeID := get("route_id")
+					routeShortName := get("route_short_name")
+					routeLongName := get("route_long_name")
+					if routeID != "" && routeShortName != "" {
+						routesCache[routeID] = RouteInfo{shortName: routeShortName, longName: routeLongName}
+					}
 				}
 			}
 		}
-	}
+	})
 }
 
 func getRouteShortName(routeID string) string {
