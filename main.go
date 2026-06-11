@@ -41,6 +41,7 @@ const (
 
 var datafeedsFilePath string
 var datafeedsDir string
+var vehicleTypesFilePath string
 var datafeedsJSONFiles []string
 var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
@@ -74,6 +75,7 @@ func main() {
 	}
 	datafeedsFilePath = filepath.Join(workingDir, "data", "gtfs.zip")
 	datafeedsDir = filepath.Join(workingDir, "data", "gtfs")
+	vehicleTypesFilePath = filepath.Join(workingDir, "vehicle_types.json")
 
 	if err := refreshDatafeeds(); err != nil {
 		log.Fatalf("failed to load datafeeds: %v", err)
@@ -1237,7 +1239,7 @@ var (
 
 func loadVehicleTypeConfig() *VehicleTypeConfig {
 	vehicleTypeOnce.Do(func() {
-		filePath := filepath.Join(datafeedsDir, "..", "vehicle_types.json")
+		filePath := vehicleTypesFilePath
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			log.Println("vehicle_types.json not found, vehicle type enrichment disabled")
 			vehicleTypeConfig = &VehicleTypeConfig{Agencies: make(map[string]AgencyVehicleMap)}
