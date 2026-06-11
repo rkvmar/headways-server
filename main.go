@@ -98,6 +98,7 @@ func main() {
 	mux.HandleFunc("/datafeeds/json", datafeedsJSONIndexHandler)
 	mux.HandleFunc("/datafeeds/json/", datafeedsJSONFileHandler)
 	mux.HandleFunc("/datafeeds/", datafeedsGTFSFileHandler)
+	mux.HandleFunc("/vehicletypes", vehicleTypesHandler)
 
 	corsHandler := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -259,6 +260,38 @@ func enrichVehiclePositions(payload []byte) []byte {
 					delay = -int32(rand.Intn(120) + 30)
 				}
 				trip["delay"] = delay
+			}
+		}
+
+		// Resolve vehicle type from vehicle ID using vehicle types map
+		if vehObj, ok := vehicle["vehicle"].(map[string]interface{}); ok {
+			vehicleID, _ := vehObj["id"].(string)
+			if vehicleID == "" {
+				// Fall back to entity ID
+				vehicleID, _ = entity["id"].(string)
+			}
+
+			// Try to determine agency code from trip
+			agencyCode := ""
+			if trip, ok := vehicle["trip"].(map[string]interface{}); ok {
+				if tripID, ok := trip["tripId"].(string); ok && tripID != "" {
+					if idx := strings.Index(tripID, ":"); idx >= 0 {
+						agencyCode = tripID[:idx]
+					} else if idx := strings.LastIndex(tripID, "~"); idx >= 0 {
+						agencyCode = tripID[:idx]
+					}
+				}
+			}
+
+			if agencyCode != "" && vehicleID != "" {
+				if vti := lookupVehicleType(agencyCode, vehicleID); vti != nil {
+					vehicle["vehicleYear"] = vti.Year
+					vehicle["vehicleMake"] = vti.Make
+					vehicle["vehicleModel"] = vti.Model
+					vehicle["vehicleFuel"] = vti.Fuel
+					vehicle["vehicleLength"] = vti.Length
+					vehicle["vehicleIconCode"] = vti.IconCode
+				}
 			}
 		}
 	}
@@ -1168,6 +1201,103 @@ type StopTimeInfo struct {
 	stop_sequence  int
 }
 
+type VehicleTypeInfo struct {
+	Year     int    `json:"year"`
+	Make     string `json:"make"`
+	Model    string `json:"model"`
+	Fuel     string `json:"fuel"`
+	Length   int    `json:"length"`
+	IconCode string `json:"icon_code"`
+}
+
+type VehicleTypeRange struct {
+	Start string          `json:"start"`
+	End   string          `json:"end"`
+	Type  VehicleTypeInfo `json:"-"`
+}
+
+type AgencyVehicleMap struct {
+	Ranges []struct {
+		Start string `json:"start"`
+		End   string `json:"end"`
+		VehicleTypeInfo
+	} `json:"ranges"`
+	Exact map[string]VehicleTypeInfo `json:"exact"`
+}
+
+type VehicleTypeConfig struct {
+	Agencies map[string]AgencyVehicleMap `json:"agencies"`
+}
+
+var (
+	vehicleTypeConfig  *VehicleTypeConfig
+	vehicleTypeOnce    sync.Once
+	vehicleTypeCacheMu sync.RWMutex
+)
+
+func loadVehicleTypeConfig() *VehicleTypeConfig {
+	vehicleTypeOnce.Do(func() {
+		filePath := filepath.Join(datafeedsDir, "..", "vehicle_types.json")
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			log.Println("vehicle_types.json not found, vehicle type enrichment disabled")
+			vehicleTypeConfig = &VehicleTypeConfig{Agencies: make(map[string]AgencyVehicleMap)}
+			return
+		}
+
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Printf("failed to read vehicle_types.json: %v", err)
+			vehicleTypeConfig = &VehicleTypeConfig{Agencies: make(map[string]AgencyVehicleMap)}
+			return
+		}
+
+		var config VehicleTypeConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			log.Printf("failed to parse vehicle_types.json: %v", err)
+			vehicleTypeConfig = &VehicleTypeConfig{Agencies: make(map[string]AgencyVehicleMap)}
+			return
+		}
+
+		vehicleTypeConfig = &config
+		log.Printf("Loaded vehicle types for %d agencies", len(config.Agencies))
+	})
+
+	return vehicleTypeConfig
+}
+
+func lookupVehicleType(agencyCode, vehicleID string) *VehicleTypeInfo {
+	config := loadVehicleTypeConfig()
+	if config == nil {
+		return nil
+	}
+
+	agencyMap, ok := config.Agencies[agencyCode]
+	if !ok {
+		return nil
+	}
+
+	// Check exact matches first
+	if exact, ok := agencyMap.Exact[vehicleID]; ok {
+		return &exact
+	}
+
+	// Check ranges
+	for _, r := range agencyMap.Ranges {
+		if vehicleID >= r.Start && vehicleID <= r.End {
+			return &VehicleTypeInfo{
+				Year:     r.Year,
+				Make:     r.Make,
+				Model:    r.Model,
+				Fuel:     r.Fuel,
+				Length:   r.Length,
+				IconCode: r.IconCode,
+			}
+		}
+	}
+
+	return nil
+}
+
 type StopInfo struct {
 	stop_id   string
 	stop_name string
@@ -1443,6 +1573,23 @@ func getRouteLongName(routeID string) string {
 		return routeID[idx+1:]
 	}
 	return routeID
+}
+
+func vehicleTypesHandler(w http.ResponseWriter, r *http.Request) {
+	config := loadVehicleTypeConfig()
+	if config == nil {
+		http.Error(w, "vehicle types not loaded", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(config); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }
 
 func runDatafeedsRefresher() {
