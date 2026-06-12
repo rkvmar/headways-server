@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/csv"
@@ -116,12 +117,12 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":8081",
 		Handler:           corsHandler(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Println("listening on :8080")
+	log.Println("listening on :8081")
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
@@ -832,10 +833,13 @@ func datafeedsGTFSFileHandler(w http.ResponseWriter, r *http.Request) {
 	switch entry.ext {
 	case ".txt", ".csv":
 		w.Header().Set("Content-Type", "application/json")
-		if err := streamCSVAsJSON(entry.path, w); err != nil {
-			http.Error(w, "failed to encode csv as json", http.StatusInternalServerError)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		data, err := loadCSVAsJSON(entry.path)
+		if err != nil {
+			log.Printf("error loading %s as json: %v", entry.path, err)
 			return
 		}
+		w.Write(data)
 	case ".md":
 		content, err := os.ReadFile(entry.path)
 		if err != nil {
@@ -1039,6 +1043,30 @@ func buildDatafeedFileMap(root string) (map[string]datafeedEntry, error) {
 	return fileMap, nil
 }
 
+func loadCSVAsJSON(path string) ([]byte, error) {
+	csvJSONCacheMu.RLock()
+	if cached, ok := csvJSONCache[path]; ok {
+		csvJSONCacheMu.RUnlock()
+		return cached, nil
+	}
+	csvJSONCacheMu.RUnlock()
+
+	var buf bytes.Buffer
+	if err := streamCSVAsJSON(path, &buf); err != nil {
+		return nil, err
+	}
+	data := buf.Bytes()
+
+	csvJSONCacheMu.Lock()
+	if csvJSONCache == nil {
+		csvJSONCache = make(map[string][]byte)
+	}
+	csvJSONCache[path] = data
+	csvJSONCacheMu.Unlock()
+
+	return data, nil
+}
+
 func streamCSVAsJSON(path string, w io.Writer) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1143,6 +1171,10 @@ func refreshDatafeeds() error {
 	shapesDataCache = nil
 	shapesDataCacheMu.Unlock()
 
+	csvJSONCacheMu.Lock()
+	csvJSONCache = nil
+	csvJSONCacheMu.Unlock()
+
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
 		log.Println("Using existing datafeed file")
 	} else {
@@ -1235,6 +1267,11 @@ var (
 	vehicleTypeConfig  *VehicleTypeConfig
 	vehicleTypeOnce    sync.Once
 	vehicleTypeCacheMu sync.RWMutex
+)
+
+var (
+	csvJSONCacheMu sync.RWMutex
+	csvJSONCache   map[string][]byte
 )
 
 func loadVehicleTypeConfig() *VehicleTypeConfig {
