@@ -94,7 +94,7 @@ func main() {
 	mux.HandleFunc("/vehiclepositions", vehiclePositionsHandler)
 	mux.HandleFunc("/routeshapes", routeShapesHandler)
 	mux.HandleFunc("/tripdetail", tripDetailHandler)
-	mux.HandleFunc("/blockschedule", blockScheduleHandler)
+	// mux.HandleFunc("/blockschedule", blockScheduleHandler)
 	mux.HandleFunc("/datafeeds/zip", datafeedsZipHandler)
 	mux.HandleFunc("/datafeeds", datafeedsGTFSIndexHandler)
 	mux.HandleFunc("/datafeeds/json", datafeedsJSONIndexHandler)
