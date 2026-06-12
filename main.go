@@ -1160,23 +1160,25 @@ func getActiveTripIDs() []string {
 		return nil
 	}
 
-	// The vehicle positions cache stores the enriched JSON, not raw protobuf.
-	// Parse it as JSON to extract trip IDs.
-	var entities []struct {
-		Vehicle *struct {
-			Trip *struct {
-				TripId string `json:"tripId"`
-			} `json:"trip"`
-		} `json:"vehicle"`
+	// The vehicle positions cache stores the enriched JSON (object with "entity" array),
+	// not raw protobuf. Parse the wrapper object to extract entities, then get trip IDs.
+	var feed struct {
+		Entity []struct {
+			Vehicle *struct {
+				Trip *struct {
+					TripId string `json:"tripId"`
+				} `json:"trip"`
+			} `json:"vehicle"`
+		} `json:"entity"`
 	}
-	if err := json.Unmarshal(payload, &entities); err != nil {
+	if err := json.Unmarshal(payload, &feed); err != nil {
 		log.Printf("failed to parse vehicle positions for active trips: %v", err)
 		return nil
 	}
 
-	tripIDs := make([]string, 0, len(entities))
+	tripIDs := make([]string, 0, len(feed.Entity))
 	seen := make(map[string]bool)
-	for _, entity := range entities {
+	for _, entity := range feed.Entity {
 		if entity.Vehicle != nil && entity.Vehicle.Trip != nil && entity.Vehicle.Trip.TripId != "" {
 			tid := entity.Vehicle.Trip.TripId
 			if !seen[tid] {
