@@ -85,6 +85,12 @@ func main() {
 		log.Fatalf("failed to load datafeeds: %v", err)
 	}
 
+	// Pre-warm GTFS data caches so the first /tripdetail request is fast.
+	// This loads trips, stop_times, and stops into memory (via sync.Once)
+	// before the HTTP server starts accepting requests.
+	loadTripsData()
+	loadStopsData()
+
 	if os.Getenv("LOCATIONS_API_KEY") == "" {
 		log.Fatalln("LOCATIONS_API_KEY not set")
 	}
@@ -1202,16 +1208,20 @@ func precomputeActiveTripDetails(activeTripIDs []string) {
 	trips := loadTripsData()
 	stops := loadStopsData()
 
-	// Group active trip IDs by whether we have stop_times loaded yet
-	// We need stop_times for the schedule data
+	// Check if any active trip IDs exist in the GTFS trips data
 	var needsStopTimes bool
+	var sampleTripID string
 	for _, tid := range activeTripIDs {
 		if _, ok := trips[tid]; ok {
 			needsStopTimes = true
 			break
 		}
+		if sampleTripID == "" {
+			sampleTripID = tid
+		}
 	}
 	if !needsStopTimes {
+		log.Printf("Active trip IDs don't match GTFS trips data (e.g. %q), skipping pre-computation", sampleTripID)
 		return
 	}
 
@@ -1611,10 +1621,9 @@ func refreshDatafeeds() error {
 		log.Printf("failed to pre-compute trips.json: %v", err)
 	}
 
-	// Pre-warm GTFS data caches in the background so the first /tripdetail request
-	// after this refresh doesn't have to wait for CSV parsing.
-	// The sync.Once guarantees these only load once; the first request will block
-	// until loading completes if it arrives before the goroutine finishes.
+	// Pre-warm GTFS data caches so the first /tripdetail request after this refresh
+	// doesn't have to wait for CSV parsing. The sync.Once guarantees these only
+	// load once into memory across all callers.
 	go func() {
 		loadTripsData()
 		loadStopsData()
