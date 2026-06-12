@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/csv"
@@ -48,8 +47,6 @@ var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
 var routeShapesCache []byte
 var routeShapesCacheMu sync.RWMutex
-var shapesDataCache map[string][][2]float64
-var shapesDataCacheMu sync.RWMutex
 
 var (
 	vehiclePositionsCacheMu      sync.RWMutex
@@ -596,21 +593,7 @@ func datafeedsJSONFileHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, fullPath)
 }
 
-func loadShapesData() (map[string][][2]float64, error) {
-	shapesDataCacheMu.RLock()
-	if shapesDataCache != nil {
-		defer shapesDataCacheMu.RUnlock()
-		return shapesDataCache, nil
-	}
-	shapesDataCacheMu.RUnlock()
-
-	shapesDataCacheMu.Lock()
-	defer shapesDataCacheMu.Unlock()
-
-	if shapesDataCache != nil {
-		return shapesDataCache, nil
-	}
-
+func loadShapeForTrip(shapeID string) ([][2]float64, error) {
 	entry, ok := datafeedsFileMap["shapes"]
 	if !ok {
 		return nil, fmt.Errorf("shapes data not available")
@@ -636,7 +619,7 @@ func loadShapesData() (map[string][][2]float64, error) {
 		lon float64
 		seq int
 	}
-	shapePoints := make(map[string][]point)
+	var points []point
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -653,8 +636,7 @@ func loadShapesData() (map[string][][2]float64, error) {
 			}
 		}
 
-		sid := rec["shape_id"]
-		if sid == "" {
+		if rec["shape_id"] != shapeID {
 			continue
 		}
 
@@ -662,23 +644,23 @@ func loadShapesData() (map[string][][2]float64, error) {
 		lon, _ := strconv.ParseFloat(rec["shape_pt_lon"], 64)
 		seq, _ := strconv.Atoi(rec["shape_pt_sequence"])
 
-		shapePoints[sid] = append(shapePoints[sid], point{lat: lat, lon: lon, seq: seq})
+		points = append(points, point{lat: lat, lon: lon, seq: seq})
 	}
 
-	result := make(map[string][][2]float64, len(shapePoints))
-	for sid, pts := range shapePoints {
-		sort.Slice(pts, func(i, j int) bool {
-			return pts[i].seq < pts[j].seq
-		})
-		coords := make([][2]float64, len(pts))
-		for i, p := range pts {
-			coords[i] = [2]float64{p.lat, p.lon}
-		}
-		result[sid] = coords
+	if len(points) == 0 {
+		return nil, nil
 	}
 
-	shapesDataCache = result
-	return result, nil
+	sort.Slice(points, func(i, j int) bool {
+		return points[i].seq < points[j].seq
+	})
+
+	coords := make([][2]float64, len(points))
+	for i, p := range points {
+		coords[i] = [2]float64{p.lat, p.lon}
+	}
+
+	return coords, nil
 }
 
 func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
@@ -720,9 +702,9 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 
 	var shapeCoords [][2]float64
 	if trip.shape_id != "" {
-		shapes, err := loadShapesData()
+		coords, err := loadShapeForTrip(trip.shape_id)
 		if err == nil {
-			shapeCoords = shapes[trip.shape_id]
+			shapeCoords = coords
 		}
 	}
 
@@ -747,39 +729,27 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
-	shapes, err := loadShapesData()
+	shapeID := r.URL.Query().Get("shape_id")
+	if shapeID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{}"))
+		return
+	}
+
+	coords, err := loadShapeForTrip(shapeID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	routeShapesCacheMu.RLock()
-	if routeShapesCache != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-		w.Write(routeShapesCache)
-		routeShapesCacheMu.RUnlock()
-		return
-	}
-	routeShapesCacheMu.RUnlock()
-
-	routeShapesCacheMu.Lock()
-	defer routeShapesCacheMu.Unlock()
-
-	if routeShapesCache != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-		w.Write(routeShapesCache)
-		return
+	if coords == nil {
+		coords = [][2]float64{}
 	}
 
-	payload, err := json.Marshal(shapes)
+	payload, err := json.Marshal(coords)
 	if err != nil {
-		http.Error(w, "failed to encode route shapes", http.StatusInternalServerError)
+		http.Error(w, "failed to encode shape", http.StatusInternalServerError)
 		return
 	}
-
-	routeShapesCache = payload
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
@@ -834,12 +804,9 @@ func datafeedsGTFSFileHandler(w http.ResponseWriter, r *http.Request) {
 	case ".txt", ".csv":
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
-		data, err := loadCSVAsJSON(entry.path)
-		if err != nil {
-			log.Printf("error loading %s as json: %v", entry.path, err)
-			return
+		if err := streamCSVAsJSON(entry.path, w); err != nil {
+			log.Printf("error streaming %s as json: %v", entry.path, err)
 		}
-		w.Write(data)
 	case ".md":
 		content, err := os.ReadFile(entry.path)
 		if err != nil {
@@ -1043,30 +1010,6 @@ func buildDatafeedFileMap(root string) (map[string]datafeedEntry, error) {
 	return fileMap, nil
 }
 
-func loadCSVAsJSON(path string) ([]byte, error) {
-	csvJSONCacheMu.RLock()
-	if cached, ok := csvJSONCache[path]; ok {
-		csvJSONCacheMu.RUnlock()
-		return cached, nil
-	}
-	csvJSONCacheMu.RUnlock()
-
-	var buf bytes.Buffer
-	if err := streamCSVAsJSON(path, &buf); err != nil {
-		return nil, err
-	}
-	data := buf.Bytes()
-
-	csvJSONCacheMu.Lock()
-	if csvJSONCache == nil {
-		csvJSONCache = make(map[string][]byte)
-	}
-	csvJSONCache[path] = data
-	csvJSONCacheMu.Unlock()
-
-	return data, nil
-}
-
 func streamCSVAsJSON(path string, w io.Writer) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1167,14 +1110,6 @@ func refreshDatafeeds() error {
 	routeShapesCache = nil
 	routeShapesCacheMu.Unlock()
 
-	shapesDataCacheMu.Lock()
-	shapesDataCache = nil
-	shapesDataCacheMu.Unlock()
-
-	csvJSONCacheMu.Lock()
-	csvJSONCache = nil
-	csvJSONCacheMu.Unlock()
-
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
 		log.Println("Using existing datafeed file")
 	} else {
@@ -1267,11 +1202,6 @@ var (
 	vehicleTypeConfig  *VehicleTypeConfig
 	vehicleTypeOnce    sync.Once
 	vehicleTypeCacheMu sync.RWMutex
-)
-
-var (
-	csvJSONCacheMu sync.RWMutex
-	csvJSONCache   map[string][]byte
 )
 
 func loadVehicleTypeConfig() *VehicleTypeConfig {
