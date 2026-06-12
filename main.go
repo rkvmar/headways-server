@@ -42,6 +42,7 @@ const (
 var datafeedsFilePath string
 var datafeedsDir string
 var vehicleTypesFilePath string
+var shapesDir string
 var datafeedsJSONFiles []string
 var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
@@ -74,6 +75,7 @@ func main() {
 	datafeedsFilePath = filepath.Join(workingDir, "data", "gtfs.zip")
 	datafeedsDir = filepath.Join(workingDir, "data", "gtfs")
 	vehicleTypesFilePath = filepath.Join(workingDir, "vehicle_types.json")
+	shapesDir = filepath.Join(workingDir, "data", "shapes")
 
 	if err := refreshDatafeeds(); err != nil {
 		log.Fatalf("failed to load datafeeds: %v", err)
@@ -838,6 +840,18 @@ func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try serving from pre-computed individual shape file first
+	if shapesDir != "" {
+		shapePath := filepath.Join(shapesDir, shapeID+".json")
+		if _, err := os.Stat(shapePath); err == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			http.ServeFile(w, r, shapePath)
+			return
+		}
+	}
+
+	// Fall back to loading from in-memory cache or scanning shapes.txt
 	coords, err := loadShapeForTrip(shapeID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -990,6 +1004,109 @@ func unzipDatafeed(zipPath, destination string) error {
 		}
 	}
 
+	return nil
+}
+
+func extractShapeFiles() error {
+	entry, ok := datafeedsFileMap["shapes"]
+	if !ok {
+		return fmt.Errorf("shapes.txt not found in datafeed")
+	}
+
+	file, err := os.Open(entry.path)
+	if err != nil {
+		return fmt.Errorf("failed to open shapes.txt: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
+
+	headers, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read shapes.txt headers: %w", err)
+	}
+
+	headerIndex := make(map[string]int)
+	for i, h := range headers {
+		headerIndex[h] = i
+	}
+
+	getField := func(record []string, field string) string {
+		if idx, ok := headerIndex[field]; ok && idx < len(record) {
+			return record[idx]
+		}
+		return ""
+	}
+
+	type shapePt struct {
+		lat float64
+		lon float64
+		seq int
+	}
+	shapePoints := make(map[string][]shapePt)
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("error reading shapes.txt during extraction: %v", err)
+			continue
+		}
+
+		sid := getField(record, "shape_id")
+		if sid == "" {
+			continue
+		}
+
+		lat, _ := strconv.ParseFloat(getField(record, "shape_pt_lat"), 64)
+		lon, _ := strconv.ParseFloat(getField(record, "shape_pt_lon"), 64)
+		seq, _ := strconv.Atoi(getField(record, "shape_pt_sequence"))
+
+		shapePoints[sid] = append(shapePoints[sid], shapePt{lat: lat, lon: lon, seq: seq})
+	}
+
+	if err := os.RemoveAll(shapesDir); err != nil {
+		return fmt.Errorf("failed to clear shapes directory: %w", err)
+	}
+	if err := os.MkdirAll(shapesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create shapes directory: %w", err)
+	}
+
+	var shapeIDs []string
+	for sid, pts := range shapePoints {
+		sort.Slice(pts, func(i, j int) bool {
+			return pts[i].seq < pts[j].seq
+		})
+
+		coords := make([][2]float64, len(pts))
+		for i, p := range pts {
+			coords[i] = [2]float64{p.lat, p.lon}
+		}
+
+		payload, err := json.Marshal(coords)
+		if err != nil {
+			log.Printf("error marshaling shape %s: %v", sid, err)
+			continue
+		}
+
+		if err := os.WriteFile(filepath.Join(shapesDir, sid+".json"), payload, 0644); err != nil {
+			log.Printf("error writing shape file %s.json: %v", sid, err)
+			continue
+		}
+		shapeIDs = append(shapeIDs, sid)
+	}
+
+	// Write an index file listing all available shape IDs
+	indexPayload, _ := json.Marshal(shapeIDs)
+	if err := os.WriteFile(filepath.Join(shapesDir, "index.json"), indexPayload, 0644); err != nil {
+		log.Printf("error writing shapes index: %v", err)
+	}
+
+	log.Printf("Extracted %d individual shape files to %s", len(shapeIDs), shapesDir)
 	return nil
 }
 
@@ -1254,6 +1371,11 @@ func refreshDatafeeds() error {
 	datafeedsJSONFiles = jsonFiles
 	datafeedsFiles = files
 	datafeedsFileMap = fileMap
+
+	if err := extractShapeFiles(); err != nil {
+		log.Printf("failed to extract individual shape files: %v", err)
+	}
+
 	return nil
 }
 
