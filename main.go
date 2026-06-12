@@ -85,12 +85,6 @@ func main() {
 		log.Fatalf("failed to load datafeeds: %v", err)
 	}
 
-	// Pre-warm GTFS data caches so the first /tripdetail request is fast.
-	// This loads trips, stop_times, and stops into memory (via sync.Once)
-	// before the HTTP server starts accepting requests.
-	loadTripsData()
-	loadStopsData()
-
 	if os.Getenv("LOCATIONS_API_KEY") == "" {
 		log.Fatalln("LOCATIONS_API_KEY not set")
 	}
@@ -1620,14 +1614,6 @@ func refreshDatafeeds() error {
 	if err := precomputeTripsData(); err != nil {
 		log.Printf("failed to pre-compute trips.json: %v", err)
 	}
-
-	// Pre-warm GTFS data caches so the first /tripdetail request after this refresh
-	// doesn't have to wait for CSV parsing. The sync.Once guarantees these only
-	// load once into memory across all callers.
-	go func() {
-		loadTripsData()
-		loadStopsData()
-	}()
 
 	return nil
 }
