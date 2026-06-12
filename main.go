@@ -1215,7 +1215,13 @@ func precomputeActiveTripDetails(activeTripIDs []string) {
 		}
 	}
 	if !needsStopTimes {
-		log.Printf("Active trip IDs don't match GTFS trips data (e.g. %q), skipping pre-computation", sampleTripID)
+		// Log a sample from each source to help debug the mismatch
+		var tripSample string
+		for tid := range trips {
+			tripSample = tid
+			break
+		}
+		log.Printf("Active trip IDs don't match GTFS trips data (vehicle example: %q, trips.txt example: %q), skipping pre-computation", sampleTripID, tripSample)
 		return
 	}
 
