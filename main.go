@@ -43,6 +43,7 @@ var datafeedsFilePath string
 var datafeedsDir string
 var vehicleTypesFilePath string
 var shapesDir string
+var tripDetailsDir string
 var datafeedsJSONFiles []string
 var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
@@ -76,6 +77,7 @@ func main() {
 	datafeedsDir = filepath.Join(workingDir, "data", "gtfs")
 	vehicleTypesFilePath = filepath.Join(workingDir, "vehicle_types.json")
 	shapesDir = filepath.Join(workingDir, "data", "shapes")
+	tripDetailsDir = filepath.Join(workingDir, "data", "tripdetails")
 
 	if err := refreshDatafeeds(); err != nil {
 		log.Fatalf("failed to load datafeeds: %v", err)
@@ -775,6 +777,19 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try serving from pre-computed trip detail file first
+	if tripDetailsDir != "" {
+		tripPath := filepath.Join(tripDetailsDir, tripID+".json")
+		if _, err := os.Stat(tripPath); err == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			http.ServeFile(w, r, tripPath)
+			return
+		}
+	}
+
+	// Fall back to building from GTFS CSVs
+
 	trips := loadTripsData()
 	stops := loadStopsData()
 
@@ -1110,6 +1125,128 @@ func extractShapeFiles() error {
 	return nil
 }
 
+func getActiveTripIDs() []string {
+	vehiclePositionsCacheMu.RLock()
+	payload := vehiclePositionsCachePayload
+	vehiclePositionsCacheMu.RUnlock()
+
+	if payload == nil {
+		return nil
+	}
+
+	// The vehicle positions cache stores the enriched JSON, not raw protobuf.
+	// Parse it as JSON to extract trip IDs.
+	var entities []struct {
+		Vehicle *struct {
+			Trip *struct {
+				TripId string `json:"tripId"`
+			} `json:"trip"`
+		} `json:"vehicle"`
+	}
+	if err := json.Unmarshal(payload, &entities); err != nil {
+		log.Printf("failed to parse vehicle positions for active trips: %v", err)
+		return nil
+	}
+
+	tripIDs := make([]string, 0, len(entities))
+	seen := make(map[string]bool)
+	for _, entity := range entities {
+		if entity.Vehicle != nil && entity.Vehicle.Trip != nil && entity.Vehicle.Trip.TripId != "" {
+			tid := entity.Vehicle.Trip.TripId
+			if !seen[tid] {
+				seen[tid] = true
+				tripIDs = append(tripIDs, tid)
+			}
+		}
+	}
+	return tripIDs
+}
+
+func precomputeActiveTripDetails(activeTripIDs []string) {
+	if len(activeTripIDs) == 0 {
+		log.Println("No active trips to precompute")
+		return
+	}
+
+	log.Printf("Pre-computing trip details for %d active trips...", len(activeTripIDs))
+
+	// Load the GTFS data (these are cached, so subsequent requests won't re-parse)
+	trips := loadTripsData()
+	stops := loadStopsData()
+
+	// Group active trip IDs by whether we have stop_times loaded yet
+	// We need stop_times for the schedule data
+	var needsStopTimes bool
+	for _, tid := range activeTripIDs {
+		if _, ok := trips[tid]; ok {
+			needsStopTimes = true
+			break
+		}
+	}
+	if !needsStopTimes {
+		return
+	}
+
+	// Trigger stop_times load by requesting a known active trip
+	_ = loadStopTimesForTrip(activeTripIDs[0])
+
+	if err := os.MkdirAll(tripDetailsDir, 0755); err != nil {
+		log.Printf("failed to create trip details directory: %v", err)
+		return
+	}
+
+	count := 0
+	for _, tid := range activeTripIDs {
+		trip, ok := trips[tid]
+		if !ok {
+			continue
+		}
+
+		times := loadStopTimesForTrip(tid)
+
+		schedule := make([]map[string]interface{}, 0, len(times))
+		for _, st := range times {
+			stop := stops[st.stop_id]
+			entry := map[string]interface{}{
+				"stop_id":        st.stop_id,
+				"stop_sequence":  st.stop_sequence,
+				"arrival_time":   st.arrival_time,
+				"departure_time": st.departure_time,
+				"stop_name":      stop.stop_name,
+				"stop_lat":       stop.stop_lat,
+				"stop_lon":       stop.stop_lon,
+			}
+			schedule = append(schedule, entry)
+		}
+
+		result := map[string]interface{}{
+			"trip_id":         trip.trip_id,
+			"route_id":        trip.route_id,
+			"service_id":      trip.service_id,
+			"trip_headsign":   trip.trip_headsign,
+			"direction_id":    trip.direction_id,
+			"shape_id":        trip.shape_id,
+			"block_id":        trip.block_id,
+			"trip_short_name": trip.trip_short_name,
+			"schedule":        schedule,
+		}
+
+		payload, err := json.Marshal(result)
+		if err != nil {
+			log.Printf("error marshaling trip detail %s: %v", tid, err)
+			continue
+		}
+
+		if err := os.WriteFile(filepath.Join(tripDetailsDir, tid+".json"), payload, 0644); err != nil {
+			log.Printf("error writing trip detail file %s.json: %v", tid, err)
+			continue
+		}
+		count++
+	}
+
+	log.Printf("Pre-computed trip details for %d active trips", count)
+}
+
 func extractZipFile(file *zip.File, destination string) error {
 	cleanName := filepath.Clean(file.Name)
 	if strings.HasPrefix(cleanName, "..") {
@@ -1337,6 +1474,15 @@ func refreshDatafeeds() error {
 	stopTimesOnce = sync.Once{}
 	stopTimesCache = nil
 
+	tripsOnce = sync.Once{}
+	tripsCache = nil
+
+	stopsOnce = sync.Once{}
+	stopsCache = nil
+
+	routesOnce = sync.Once{}
+	routesCache = nil
+
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
 		log.Println("Using existing datafeed file")
 	} else {
@@ -1374,6 +1520,15 @@ func refreshDatafeeds() error {
 
 	if err := extractShapeFiles(); err != nil {
 		log.Printf("failed to extract individual shape files: %v", err)
+	}
+
+	// Pre-compute trip details for currently active vehicles
+	// Vehicle positions may not be populated yet on first startup, which is fine —
+	// the hourly refresh will pick them up
+	if activeTripIDs := getActiveTripIDs(); len(activeTripIDs) > 0 {
+		precomputeActiveTripDetails(activeTripIDs)
+	} else {
+		log.Println("No active vehicle positions yet, skipping trip detail pre-computation")
 	}
 
 	return nil
