@@ -44,6 +44,7 @@ var datafeedsDir string
 var vehicleTypesFilePath string
 var shapesDir string
 var tripDetailsDir string
+var tripDataDir string
 var datafeedsJSONFiles []string
 var datafeedsFiles []string
 var datafeedsFileMap map[string]datafeedEntry
@@ -78,6 +79,7 @@ func main() {
 	vehicleTypesFilePath = filepath.Join(workingDir, "vehicle_types.json")
 	shapesDir = filepath.Join(workingDir, "data", "shapes")
 	tripDetailsDir = filepath.Join(workingDir, "data", "tripdetails")
+	tripDataDir = filepath.Join(workingDir, "data", "tripdata")
 
 	if err := refreshDatafeeds(); err != nil {
 		log.Fatalf("failed to load datafeeds: %v", err)
@@ -933,6 +935,16 @@ func datafeedsGTFSFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch entry.ext {
 	case ".txt", ".csv":
+		// For trips.txt, serve the pre-computed static file if available
+		if name == "trips" && tripDataDir != "" {
+			tripsPath := filepath.Join(tripDataDir, "trips.json")
+			if _, err := os.Stat(tripsPath); err == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "public, max-age=3600")
+				http.ServeFile(w, r, tripsPath)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		if err := streamCSVAsJSON(entry.path, w); err != nil {
@@ -1247,6 +1259,53 @@ func precomputeActiveTripDetails(activeTripIDs []string) {
 	log.Printf("Pre-computed trip details for %d active trips", count)
 }
 
+func precomputeTripsData() error {
+	entry, ok := datafeedsFileMap["trips"]
+	if !ok {
+		return fmt.Errorf("trips.txt not found in datafeed")
+	}
+
+	file, err := os.Open(entry.path)
+	if err != nil {
+		return fmt.Errorf("failed to open trips.txt: %w", err)
+	}
+	defer file.Close()
+
+	if err := os.MkdirAll(tripDataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create tripdata directory: %w", err)
+	}
+
+	outPath := filepath.Join(tripDataDir, "trips.json")
+	tmpPath := outPath + ".tmp"
+
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to create trips.json.tmp: %w", err)
+	}
+
+	// Stream CSV as JSON to the temp file
+	if err := streamCSVAsJSON(entry.path, out); err != nil {
+		out.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to stream trips as json: %w", err)
+	}
+	out.Close()
+
+	// Atomic rename to avoid partial reads
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		return fmt.Errorf("failed to rename trips.json: %w", err)
+	}
+
+	log.Printf("Pre-computed trips.json (size: %d bytes)", func() int64 {
+		fi, _ := os.Stat(outPath)
+		if fi != nil {
+			return fi.Size()
+		}
+		return 0
+	}())
+	return nil
+}
+
 func extractZipFile(file *zip.File, destination string) error {
 	cleanName := filepath.Clean(file.Name)
 	if strings.HasPrefix(cleanName, "..") {
@@ -1529,6 +1588,11 @@ func refreshDatafeeds() error {
 		precomputeActiveTripDetails(activeTripIDs)
 	} else {
 		log.Println("No active vehicle positions yet, skipping trip detail pre-computation")
+	}
+
+	// Pre-compute static trips.json for fast serving (avoids chunked encoding issues)
+	if err := precomputeTripsData(); err != nil {
+		log.Printf("failed to pre-compute trips.json: %v", err)
 	}
 
 	return nil
