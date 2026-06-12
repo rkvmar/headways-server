@@ -531,6 +531,20 @@ func refreshVehiclePositions() error {
 	vehiclePositionsCacheTime = time.Now()
 	vehiclePositionsCacheMu.Unlock()
 
+	// After a successful vehicle positions refresh, precompute trip details
+	// for active vehicles if they haven't been precomputed yet.
+	// This makes subsequent /tripdetail requests fast (served from precomputed files)
+	// instead of falling back to slow CSV parsing.
+	if tripDetailsDir != "" {
+		if _, err := os.Stat(tripDetailsDir); os.IsNotExist(err) {
+			go func() {
+				if activeTripIDs := getActiveTripIDs(); len(activeTripIDs) > 0 {
+					precomputeActiveTripDetails(activeTripIDs)
+				}
+			}()
+		}
+	}
+
 	return nil
 }
 
@@ -1594,6 +1608,15 @@ func refreshDatafeeds() error {
 	if err := precomputeTripsData(); err != nil {
 		log.Printf("failed to pre-compute trips.json: %v", err)
 	}
+
+	// Pre-warm GTFS data caches in the background so the first /tripdetail request
+	// after this refresh doesn't have to wait for CSV parsing.
+	// The sync.Once guarantees these only load once; the first request will block
+	// until loading completes if it arrives before the goroutine finishes.
+	go func() {
+		loadTripsData()
+		loadStopsData()
+	}()
 
 	return nil
 }
