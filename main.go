@@ -789,14 +789,18 @@ func loadShapeFromDisk(shapeID string) ([][2]float64, error) {
 func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 	tripID := r.URL.Query().Get("trip_id")
 	if tripID == "" {
+		log.Println("tripDetail: missing trip_id param")
 		http.Error(w, "trip_id query param required", http.StatusBadRequest)
 		return
 	}
+
+	log.Printf("tripDetail: loading trip_id=%s", tripID)
 
 	// Try serving from pre-computed trip detail file first
 	if tripDetailsDir != "" {
 		tripPath := filepath.Join(tripDetailsDir, tripID+".json")
 		if _, err := os.Stat(tripPath); err == nil {
+			log.Printf("tripDetail: serving pre-computed file for trip_id=%s", tripID)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "public, max-age=300")
 			http.ServeFile(w, r, tripPath)
@@ -805,12 +809,14 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fall back to building from GTFS CSVs
+	log.Printf("tripDetail: pre-computed file not found, building from CSVs for trip_id=%s", tripID)
 
 	trips := loadTripsData()
 	stops := loadStopsData()
 
 	trip, ok := trips[tripID]
 	if !ok {
+		log.Printf("tripDetail: trip_id=%s not found", tripID)
 		http.Error(w, "trip not found", http.StatusNotFound)
 		return
 	}
@@ -856,6 +862,7 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 		"schedule":        schedule,
 	}
 
+	log.Printf("tripDetail: returning trip_id=%s with %d stops, %d shape points", tripID, len(schedule), len(shapeCoords))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	enc := json.NewEncoder(w)
@@ -866,15 +873,19 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
 	shapeID := r.URL.Query().Get("shape_id")
 	if shapeID == "" {
+		log.Println("routeShapes: missing shape_id param")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("{}"))
 		return
 	}
 
+	log.Printf("routeShapes: loading shape_id=%s", shapeID)
+
 	// Try serving from pre-computed individual shape file first
 	if shapesDir != "" {
 		shapePath := filepath.Join(shapesDir, shapeID+".json")
 		if _, err := os.Stat(shapePath); err == nil {
+			log.Printf("routeShapes: serving pre-computed file for shape_id=%s", shapeID)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "public, max-age=86400")
 			http.ServeFile(w, r, shapePath)
@@ -883,8 +894,10 @@ func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fall back to loading from in-memory cache or scanning shapes.txt
+	log.Printf("routeShapes: pre-computed file not found, loading from cache/CSV for shape_id=%s", shapeID)
 	coords, err := loadShapeForTrip(shapeID)
 	if err != nil {
+		log.Printf("routeShapes: error loading shape_id=%s: %v", shapeID, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -894,10 +907,12 @@ func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := json.Marshal(coords)
 	if err != nil {
+		log.Printf("routeShapes: failed to encode shape_id=%s: %v", shapeID, err)
 		http.Error(w, "failed to encode shape", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("routeShapes: returning %d points for shape_id=%s", len(coords), shapeID)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Write(payload)
@@ -1616,6 +1631,12 @@ func refreshDatafeeds() error {
 			log.Printf("failed to pre-compute %s.json: %v", table, err)
 		}
 	}
+
+	// Warm the in-memory caches so the first user request doesn't trigger lazy-loading
+	log.Println("Warming in-memory data caches...")
+	loadTripsData() // triggers trips + stop_times load
+	loadStopsData() // triggers stops load
+	log.Println("In-memory caches warmed")
 
 	return nil
 }
