@@ -949,13 +949,13 @@ func datafeedsGTFSFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch entry.ext {
 	case ".txt", ".csv":
-		// For trips.txt, serve the pre-computed static file if available
-		if name == "trips" && tripDataDir != "" {
-			tripsPath := filepath.Join(tripDataDir, "trips.json")
-			if _, err := os.Stat(tripsPath); err == nil {
+		// Serve pre-computed JSON if available (faster than streaming CSV on every request)
+		if tripDataDir != "" {
+			cachedPath := filepath.Join(tripDataDir, name+".json")
+			if _, err := os.Stat(cachedPath); err == nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "public, max-age=3600")
-				http.ServeFile(w, r, tripsPath)
+				http.ServeFile(w, r, cachedPath)
 				return
 			}
 		}
@@ -1285,44 +1285,38 @@ func precomputeActiveTripDetails(activeTripIDs []string) {
 	log.Printf("Pre-computed trip details for %d active trips", count)
 }
 
-func precomputeTripsData() error {
-	entry, ok := datafeedsFileMap["trips"]
+func cacheDatafeedJSON(name string) error {
+	entry, ok := datafeedsFileMap[name]
 	if !ok {
-		return fmt.Errorf("trips.txt not found in datafeed")
+		return fmt.Errorf("%s not found in datafeed", name)
 	}
-
-	file, err := os.Open(entry.path)
-	if err != nil {
-		return fmt.Errorf("failed to open trips.txt: %w", err)
-	}
-	defer file.Close()
 
 	if err := os.MkdirAll(tripDataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create tripdata directory: %w", err)
 	}
 
-	outPath := filepath.Join(tripDataDir, "trips.json")
+	outPath := filepath.Join(tripDataDir, name+".json")
 	tmpPath := outPath + ".tmp"
 
 	out, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("failed to create trips.json.tmp: %w", err)
+		return fmt.Errorf("failed to create %s.json.tmp: %w", name, err)
 	}
 
 	// Stream CSV as JSON to the temp file
 	if err := streamCSVAsJSON(entry.path, out); err != nil {
 		out.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("failed to stream trips as json: %w", err)
+		return fmt.Errorf("failed to stream %s as json: %w", name, err)
 	}
 	out.Close()
 
 	// Atomic rename to avoid partial reads
 	if err := os.Rename(tmpPath, outPath); err != nil {
-		return fmt.Errorf("failed to rename trips.json: %w", err)
+		return fmt.Errorf("failed to rename %s.json: %w", name, err)
 	}
 
-	log.Printf("Pre-computed trips.json (size: %d bytes)", func() int64 {
+	log.Printf("Pre-computed %s.json (size: %d bytes)", name, func() int64 {
 		fi, _ := os.Stat(outPath)
 		if fi != nil {
 			return fi.Size()
@@ -1616,9 +1610,11 @@ func refreshDatafeeds() error {
 		log.Println("No active vehicle positions yet, skipping trip detail pre-computation")
 	}
 
-	// Pre-compute static trips.json for fast serving (avoids chunked encoding issues)
-	if err := precomputeTripsData(); err != nil {
-		log.Printf("failed to pre-compute trips.json: %v", err)
+	// Pre-compute static JSON files for fast serving (avoids streaming CSV on every request)
+	for _, table := range []string{"agency", "routes", "stops", "trips"} {
+		if err := cacheDatafeedJSON(table); err != nil {
+			log.Printf("failed to pre-compute %s.json: %v", table, err)
+		}
 	}
 
 	return nil
