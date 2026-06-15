@@ -106,10 +106,6 @@ func main() {
 		time.Sleep(1 * time.Second)
 	}
 
-	if err := refreshDatafeeds(); err != nil {
-		log.Fatalf("failed to load datafeeds: %v", err)
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tripupdates", tripUpdatesHandler)
 	mux.HandleFunc("/vehiclepositions", vehiclePositionsHandler)
@@ -141,6 +137,14 @@ func main() {
 		Handler:           corsHandler(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// Start the HTTP server immediately so health checks and early requests work,
+	// then finish loading data asynchronously.
+	go func() {
+		if err := refreshDatafeeds(); err != nil {
+			log.Fatalf("failed to load datafeeds: %v", err)
+		}
+	}()
 
 	log.Println("listening on :8081")
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
