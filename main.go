@@ -1579,16 +1579,16 @@ func refreshDatafeeds() error {
 	shapesCacheMu.Unlock()
 
 	stopTimesOnce = sync.Once{}
-	stopTimesCache = nil
+	stopTimesCache = make(map[string][]StopTimeInfo) // non-nil so concurrent in-flight writes don't panic
 
 	tripsOnce = sync.Once{}
-	tripsCache = nil
+	tripsCache = make(map[string]TripInfo)
 
 	stopsOnce = sync.Once{}
-	stopsCache = nil
+	stopsCache = make(map[string]StopInfo)
 
 	routesOnce = sync.Once{}
-	routesCache = nil
+	routesCache = make(map[string]RouteInfo)
 
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
 		log.Println("Using existing datafeed file")

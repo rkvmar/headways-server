@@ -1,4 +1,4 @@
 .env
 DS_STORE
 /data
-./headways-server
+headways-server
