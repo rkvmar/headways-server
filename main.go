@@ -81,17 +81,33 @@ func main() {
 	tripDetailsDir = filepath.Join(workingDir, "data", "tripdetails")
 	tripDataDir = filepath.Join(workingDir, "data", "tripdata")
 
-	if err := refreshDatafeeds(); err != nil {
-		log.Fatalf("failed to load datafeeds: %v", err)
-	}
-
 	if os.Getenv("LOCATIONS_API_KEY") == "" {
 		log.Fatalln("LOCATIONS_API_KEY not set")
 	}
 
+	// Start the datasource refreshers first so their caches have a chance to
+	// populate before the blocking refreshDatafeeds call.
 	go runDatafeedsRefresher()
 	go runVehiclePositionsRefresher()
 	go runTripUpdatesRefresher()
+
+	// Wait for the first successful vehicle positions fetch (so we can
+	// pre-compute trip details for active vehicles during startup).
+	log.Println("Waiting for initial vehicle positions...")
+	for i := 0; i < 60; i++ {
+		vehiclePositionsCacheMu.RLock()
+		hasPayload := vehiclePositionsCachePayload != nil
+		vehiclePositionsCacheMu.RUnlock()
+		if hasPayload {
+			log.Println("Initial vehicle positions received")
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	if err := refreshDatafeeds(); err != nil {
+		log.Fatalf("failed to load datafeeds: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tripupdates", tripUpdatesHandler)
@@ -531,18 +547,15 @@ func refreshVehiclePositions() error {
 	vehiclePositionsCacheTime = time.Now()
 	vehiclePositionsCacheMu.Unlock()
 
-	// After a successful vehicle positions refresh, precompute trip details
-	// for active vehicles if they haven't been precomputed yet.
-	// This makes subsequent /tripdetail requests fast (served from precomputed files)
-	// instead of falling back to slow CSV parsing.
+	// Precompute trip details for active vehicles so /tripdetail requests
+	// are served from precomputed files instead of falling back to slow CSV parsing.
 	if tripDetailsDir != "" {
-		if _, err := os.Stat(tripDetailsDir); os.IsNotExist(err) {
-			go func() {
-				if activeTripIDs := getActiveTripIDs(); len(activeTripIDs) > 0 {
-					precomputeActiveTripDetails(activeTripIDs)
-				}
-			}()
-		}
+		go func() {
+			if activeTripIDs := getActiveTripIDs(); len(activeTripIDs) > 0 {
+				log.Printf("Pre-computing trip details for %d active vehicles", len(activeTripIDs))
+				precomputeActiveTripDetails(activeTripIDs)
+			}
+		}()
 	}
 
 	return nil
@@ -1616,13 +1629,14 @@ func refreshDatafeeds() error {
 		log.Printf("failed to extract individual shape files: %v", err)
 	}
 
-	// Pre-compute trip details for currently active vehicles
-	// Vehicle positions may not be populated yet on first startup, which is fine —
-	// the hourly refresh will pick them up
+	// Pre-compute trip details for currently active vehicles so /tripdetail
+	// requests are served fast from pre-computed files.
+	// The vehicle positions refresher also does this on each successful fetch.
 	if activeTripIDs := getActiveTripIDs(); len(activeTripIDs) > 0 {
+		log.Printf("Pre-computing trip details for %d active vehicles", len(activeTripIDs))
 		precomputeActiveTripDetails(activeTripIDs)
 	} else {
-		log.Println("No active vehicle positions yet, skipping trip detail pre-computation")
+		log.Println("No active vehicle positions for trip pre-computation (511 API may be down or no vehicles active)")
 	}
 
 	// Pre-compute static JSON files for fast serving (avoids streaming CSV on every request)
