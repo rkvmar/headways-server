@@ -298,14 +298,26 @@ func enrichVehiclePositions(payload []byte) []byte {
 				vehicleID, _ = entity["id"].(string)
 			}
 
-			// Try to determine agency code from trip
+			// Determine agency code by looking up the trip in GTFS static data
+			// (matches the frontend's approach: tripInfo.route_id?.split(':')[0])
 			agencyCode := ""
 			if trip, ok := vehicle["trip"].(map[string]interface{}); ok {
 				if tripID, ok := trip["tripId"].(string); ok && tripID != "" {
+					// Try the tripId prefix first (e.g. "ST:12345" -> "ST")
 					if idx := strings.Index(tripID, ":"); idx >= 0 {
 						agencyCode = tripID[:idx]
 					} else if idx := strings.LastIndex(tripID, "~"); idx >= 0 {
 						agencyCode = tripID[:idx]
+					}
+
+					// If tripId has no prefix, look up the trip in static GTFS data
+					if agencyCode == "" {
+						trips := loadTripsData()
+						if ti, ok := trips[tripID]; ok && ti.route_id != "" {
+							if idx := strings.Index(ti.route_id, ":"); idx >= 0 {
+								agencyCode = ti.route_id[:idx]
+							}
+						}
 					}
 				}
 			}

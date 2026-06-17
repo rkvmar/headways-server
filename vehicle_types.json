@@ -6,7 +6,7 @@
           "start": "8531",
           "end": "8560",
           "year": 2021,
-          "make": "ElDorado National",
+          "make": "ElDorado",
           "model": "EZ-Rider II",
           "fuel": "Diesel-Electric Hybrid",
           "length": 32,
@@ -117,7 +117,7 @@
           "end": "5006",
           "year": 2021,
           "make": "BYD",
-          "model": "K9",
+          "model": "K9M",
           "fuel": "Battery Electric",
           "length": 40,
           "icon_code": "bus"
@@ -412,7 +412,7 @@
         }
       }
     },
-    "ST": {
+    "SM": {
       "ranges": [
         {
           "start": "400",
@@ -662,7 +662,7 @@
           "start": "3505",
           "end": "3510",
           "year": 2016,
-          "make": "ElDorado National",
+          "make": "ElDorado",
           "model": "Aerotech 220",
           "fuel": "Diesel",
           "length": 24,
@@ -781,7 +781,7 @@
       }
     },
     "SC": {
-      "range": [
+      "ranges": [
         {
           "start": "0130",
           "end": "0194",
@@ -984,6 +984,480 @@
         }
       ],
       "exact": {}
+    },
+    "GG": {
+      "ranges": [
+        {
+          "start": "924",
+          "end": "955",
+          "year": 2012,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "956",
+          "end": "980",
+          "year": 2014,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1901",
+          "end": "1967",
+          "year": 2019,
+          "make": "Gillig",
+          "model": "Low Floor HEV",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
+        }
+      ]
+    },
+    "ST": {
+      "ranges": [
+        {
+          "start": "3901",
+          "end": "3921",
+          "year": 2011,
+          "make": "Gillig",
+          "model": "Low Floor HEV",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "4500",
+          "end": "4501",
+          "year": 2017,
+          "make": "BYD",
+          "model": "K9M",
+          "fuel": "Battery Electric",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "4502",
+          "end": "4503",
+          "year": 2019,
+          "make": "BYD",
+          "model": "K9M",
+          "fuel": "Battery Electric",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "5051",
+          "end": "5059",
+          "year": 2018,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "5101",
+          "end": "5106",
+          "year": 2017,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Natural Gas",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "5107",
+          "end": "5110",
+          "year": 2018,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Natural Gas",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "5111",
+          "end": "5116",
+          "year": 2019,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Natural Gas",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "5117",
+          "end": "5121",
+          "year": 2022,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Natural Gas",
+          "length": 45,
+          "icon_code": "bus"
+        }
+      ],
+      "exact": {
+        "4100": {
+          "year": 2016,
+          "make": "Nova Bus",
+          "model": "LFS",
+          "fuel": "Natural Gas",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        "5501": {
+          "year": 2022,
+          "make": "BYD",
+          "model": "C10M",
+          "fuel": "Battery Electric",
+          "length": 45,
+          "icon_code": "bus"
+        }
+      }
+    },
+    "MA": {
+      "ranges": [
+        {
+          "start": "1501",
+          "end": "1504",
+          "year": 2016,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 29,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1505",
+          "end": "1511",
+          "year": 2016,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1560",
+          "end": "1561",
+          "year": 2015,
+          "make": "ElDorado",
+          "model": "Aero Elite 270",
+          "fuel": "Gas",
+          "length": 24,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1701",
+          "end": "1710",
+          "year": 2017,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1701",
+          "end": "1710",
+          "year": 2017,
+          "make": "ElDorado",
+          "model": "XHF 29",
+          "fuel": "Diesel",
+          "length": 29,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1801",
+          "end": "1802",
+          "year": 2018,
+          "make": "BYD",
+          "model": "K9S",
+          "fuel": "Battery Electric",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "1860",
+          "end": "1861",
+          "year": 2018,
+          "make": "ElDorado",
+          "model": "XHF 35",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2001",
+          "end": "2011",
+          "year": 2019,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2080",
+          "end": "2088",
+          "year": 2021,
+          "make": "ElDorado",
+          "model": "Aerotech",
+          "fuel": "Gas",
+          "length": 24,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2101",
+          "end": "2104",
+          "year": 2021,
+          "make": "Gillig",
+          "model": "Low Floor Plus EV",
+          "fuel": "Battery Electric",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2160",
+          "end": "2163",
+          "year": 2021,
+          "make": "ElDorado",
+          "model": "XHF 29",
+          "fuel": "Diesel",
+          "length": 29,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2170",
+          "end": "2171",
+          "year": 2021,
+          "make": "ElDorado",
+          "model": "XHF 35",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2401",
+          "end": "2404",
+          "year": 2024,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "2405",
+          "end": "2407",
+          "year": 2024,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "3062",
+          "end": "3064",
+          "year": 2011,
+          "make": "ElDorado",
+          "model": "XHF 35",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "3065",
+          "end": "3069",
+          "year": 2012,
+          "make": "ElDorado",
+          "model": "XHF 35",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        }
+      ],
+      "exact": {
+        "301": {
+          "year": 2015,
+          "make": "ElDorado",
+          "model": "XHF 29",
+          "fuel": "Battery Electric",
+          "length": 29,
+          "icon_code": "bus"
+        },
+        "1680": {
+          "year": 2015,
+          "make": "ElDorado",
+          "model": "Aerotech",
+          "fuel": "Gas",
+          "length": 24,
+          "icon_code": "bus"
+        },
+        "1880": {
+          "year": 2018,
+          "make": "ElDorado",
+          "model": "Aerotech",
+          "fuel": "Gas",
+          "length": 24,
+          "icon_code": "bus"
+        },
+        "1980": {
+          "year": 2019,
+          "make": "ElDorado",
+          "model": "Aerotech",
+          "fuel": "Gas",
+          "length": 24,
+          "icon_code": "bus"
+        }
+      }
+    },
+    "WC": {
+      "ranges": [
+        {
+          "start": "161",
+          "end": "165",
+          "year": 2013,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "166",
+          "end": "169",
+          "year": 2014,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "170",
+          "end": "175",
+          "year": 2020,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "175",
+          "end": "180",
+          "year": 2024,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "200",
+          "end": "201",
+          "year": 2008,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "202",
+          "end": "204",
+          "year": 2011,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "210",
+          "end": "212",
+          "year": 2025,
+          "make": "MCI",
+          "model": "D45 CRT LE",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        {
+          "start": "401",
+          "end": "408",
+          "year": 2014,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "409",
+          "end": "412",
+          "year": 2019,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "413",
+          "end": "416",
+          "year": 2022,
+          "make": "Gillig",
+          "model": "BRT",
+          "fuel": "Diesel",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "601",
+          "end": "603",
+          "year": 2018,
+          "make": "Alexander Dennis",
+          "model": "Enviro500",
+          "fuel": "Diesel",
+          "length": 42,
+          "icon_code": "bus"
+        }
+      ],
+      "exact": {
+        "205": {
+          "year": 2015,
+          "make": "Prevost",
+          "model": "X3-45",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        "206": {
+          "year": 2011,
+          "make": "Prevost",
+          "model": "X3-45",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        },
+        "207": {
+          "year": 2014,
+          "make": "MCI",
+          "model": "D4500CT",
+          "fuel": "Diesel",
+          "length": 45,
+          "icon_code": "bus"
+        }
+      }
     }
   }
 }
