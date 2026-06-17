@@ -1458,6 +1458,54 @@
           "icon_code": "bus"
         }
       }
+    },
+    "CT": {
+      "ranges": [
+        {
+          "start": "100",
+          "end": "799",
+          "year": 2024,
+          "make": "Stadler",
+          "model": "KISS160",
+          "fuel": "Electric",
+          "length": 82,
+          "icon_code": "train"
+        }
+      ]
+    },
+    "VN": {
+      "ranges": [
+        {
+          "start": "135",
+          "end": "138",
+          "year": 2013,
+          "make": "ElDorado",
+          "model": "Axess BRT 40",
+          "fuel": "Diesel",
+          "length": 40,
+          "icon_code": "bus"
+        },
+        {
+          "start": "139",
+          "end": "144",
+          "year": 2013,
+          "make": "ElDorado",
+          "model": "Axess BRT 35",
+          "fuel": "Diesel",
+          "length": 35,
+          "icon_code": "bus"
+        },
+        {
+          "start": "200",
+          "end": "204",
+          "year": 2013,
+          "make": "ElDorado",
+          "model": "Axess BRT 35",
+          "fuel": "Natural Gas",
+          "length": 35,
+          "icon_code": "bus"
+        }
+      ]
     }
   }
 }
