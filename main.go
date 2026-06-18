@@ -82,6 +82,12 @@ func main() {
 	tripDetailsDir = filepath.Join(workingDir, "data", "tripdetails")
 	tripDataDir = filepath.Join(workingDir, "data", "tripdata")
 
+	if err := initMongoDB(); err != nil {
+		log.Printf("MongoDB not available, image features disabled: %v", err)
+	} else {
+		defer closeMongoDB()
+	}
+
 	if os.Getenv("LOCATIONS_API_KEY") == "" {
 		log.Fatalln("LOCATIONS_API_KEY not set")
 	}
@@ -119,10 +125,17 @@ func main() {
 	mux.HandleFunc("/datafeeds/", datafeedsGTFSFileHandler)
 	mux.HandleFunc("/vehicletypes", vehicleTypesHandler)
 
+	// Image upload and management
+	mux.HandleFunc("/api/images/upload", createImageHandler)
+	mux.HandleFunc("/api/images/vehicle/{vehicle_id}", vehicleImagesHandler)
+	mux.HandleFunc("/api/images/{id}", deleteImageHandler)
+	mux.HandleFunc("/api/images", vehicleImagesListHandler)
+	mux.HandleFunc("/upload", imageUploadPageHandler)
+
 	corsHandler := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
@@ -2068,7 +2081,6 @@ func loadStopsData() map[string]StopInfo {
 }
 
 func loadRoutesData() map[string]RouteInfo {
-	// Fast path: already loaded
 	if m := routesData.Load(); m != nil {
 		return *m
 	}
