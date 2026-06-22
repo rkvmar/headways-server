@@ -43,6 +43,7 @@ const (
 var datafeedsFilePath string
 var datafeedsDir string
 var vehicleTypesFilePath string
+var vehiclePositionsCacheFilePath string
 var shapesDir string
 var tripDetailsDir string
 var tripDataDir string
@@ -78,6 +79,7 @@ func main() {
 	datafeedsFilePath = filepath.Join(workingDir, "data", "gtfs.zip")
 	datafeedsDir = filepath.Join(workingDir, "data", "gtfs")
 	vehicleTypesFilePath = filepath.Join(workingDir, "vehicle_types.json")
+	vehiclePositionsCacheFilePath = filepath.Join(workingDir, "data", "vehicle_positions.json")
 	shapesDir = filepath.Join(workingDir, "data", "shapes")
 	tripDetailsDir = filepath.Join(workingDir, "data", "tripdetails")
 	tripDataDir = filepath.Join(workingDir, "data", "tripdata")
@@ -97,6 +99,18 @@ func main() {
 	go runDatafeedsRefresher()
 	go runVehiclePositionsRefresher()
 	go runTripUpdatesRefresher()
+
+	// Load previously cached vehicle positions from disk so they're
+	// immediately available, even before the first upstream fetch completes.
+	if data, err := os.ReadFile(vehiclePositionsCacheFilePath); err == nil && len(data) > 0 {
+		vehiclePositionsCacheMu.Lock()
+		vehiclePositionsCachePayload = data
+		vehiclePositionsCacheTime = time.Now()
+		vehiclePositionsCacheMu.Unlock()
+		log.Println("Loaded cached vehicle positions from disk")
+	} else {
+		log.Println("No disk cache for vehicle positions, waiting for initial fetch...")
+	}
 
 	// Wait for the first successful vehicle positions fetch (so we can
 	// pre-compute trip details for active vehicles during startup).
@@ -367,8 +381,14 @@ func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload == nil {
-		http.Error(w, "vehicle positions cache not yet populated", http.StatusServiceUnavailable)
-		return
+		// Attempt fallback to disk cache.
+		if data, err := os.ReadFile(vehiclePositionsCacheFilePath); err == nil && len(data) > 0 {
+			payload = data
+			log.Println("Serving vehicle positions from disk fallback")
+		} else {
+			http.Error(w, "vehicle positions cache not yet populated", http.StatusServiceUnavailable)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -576,6 +596,11 @@ func refreshVehiclePositions() error {
 	vehiclePositionsCacheErr = nil
 	vehiclePositionsCacheTime = time.Now()
 	vehiclePositionsCacheMu.Unlock()
+
+	// Persist to disk so the cache survives restarts and is always available.
+	if err := os.WriteFile(vehiclePositionsCacheFilePath, payload, 0644); err != nil {
+		log.Printf("Failed to persist vehicle positions to disk: %v", err)
+	}
 
 	// Precompute trip details for active vehicles so /tripdetail requests
 	// are served from precomputed files instead of falling back to slow CSV parsing.
