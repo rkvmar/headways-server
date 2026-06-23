@@ -195,9 +195,14 @@ func tripUpdatesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	envelope := map[string]interface{}{
+		"fetchedAt": cacheTime.UTC().Format(time.RFC3339Nano),
+		"data":      json.RawMessage(payload),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache-Time", cacheTime.UTC().Format(http.TimeFormat))
-	if _, err := w.Write(payload); err != nil {
+	if err := json.NewEncoder(w).Encode(envelope); err != nil {
 		http.Error(w, "failed to write response", http.StatusInternalServerError)
 		return
 	}
@@ -391,9 +396,14 @@ func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	envelope := map[string]interface{}{
+		"fetchedAt": cacheTime.UTC().Format(time.RFC3339Nano),
+		"data":      json.RawMessage(payload),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache-Time", cacheTime.UTC().Format(http.TimeFormat))
-	if _, err := w.Write(payload); err != nil {
+	if err := json.NewEncoder(w).Encode(envelope); err != nil {
 		http.Error(w, "failed to write response", http.StatusInternalServerError)
 		return
 	}
