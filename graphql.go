@@ -6,12 +6,22 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/graphql-go/graphql"
 )
 
 var gqlSchema graphql.Schema
+
+var tripsCache []interface{}
+var tripsCacheMu sync.RWMutex
+
+func invalidateTripsCache() {
+	tripsCacheMu.Lock()
+	tripsCache = nil
+	tripsCacheMu.Unlock()
+}
 
 func init() {
 	q := graphql.NewObject(graphql.ObjectConfig{
@@ -282,28 +292,52 @@ func resolveStops(p graphql.ResolveParams) (interface{}, error) {
 }
 
 func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
-	path := filepath.Join(tripDataDir, "trips.json")
-	return readJSONArray(path)
+	tripsCacheMu.RLock()
+	if tripsCache != nil {
+		defer tripsCacheMu.RUnlock()
+		return tripsCache, nil
+	}
+	tripsCacheMu.RUnlock()
+
+	tripsCacheMu.Lock()
+	defer tripsCacheMu.Unlock()
+	if tripsCache != nil {
+		return tripsCache, nil
+	}
+
+	trips := loadTripsData()
+	result := make([]interface{}, 0, len(trips))
+	for _, t := range trips {
+		result = append(result, map[string]interface{}{
+			"trip_id":                 t.trip_id,
+			"route_id":                t.route_id,
+			"service_id":              t.service_id,
+			"trip_headsign":           t.trip_headsign,
+			"direction_id":            t.direction_id,
+			"shape_id":                t.shape_id,
+			"block_id":                t.block_id,
+			"trip_short_name":         t.trip_short_name,
+			"wheelchair_accessible":   t.wheelchair_accessible,
+			"bikes_allowed":           t.bikes_allowed,
+		})
+	}
+	tripsCache = result
+	return result, nil
 }
 
 func resolveVehicleFeed(p graphql.ResolveParams) (interface{}, error) {
 	vehiclePositionsCacheMu.RLock()
-	payload := vehiclePositionsCachePayload
+	parsed := vehiclePositionsCacheParsed
 	cacheTime := vehiclePositionsCacheTime
 	vehiclePositionsCacheMu.RUnlock()
 
-	if payload == nil {
+	if parsed == nil {
 		return nil, nil
-	}
-
-	var data interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		return nil, err
 	}
 
 	return map[string]interface{}{
 		"fetchedAt": cacheTime.UTC().Format(time.RFC3339Nano),
-		"data":      data,
+		"data":      parsed,
 	}, nil
 }
 

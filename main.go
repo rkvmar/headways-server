@@ -54,11 +54,25 @@ var routeShapesCache []byte
 var routeShapesCacheMu sync.RWMutex
 
 var (
-	vehiclePositionsCacheMu      sync.RWMutex
-	vehiclePositionsCachePayload []byte
-	vehiclePositionsCacheErr     error
-	vehiclePositionsCacheTime    time.Time
+	vehiclePositionsCacheMu         sync.RWMutex
+	vehiclePositionsCachePayload    []byte
+	vehiclePositionsCacheParsed     interface{}
+	vehiclePositionsCacheErr        error
+	vehiclePositionsCacheTime       time.Time
 )
+
+func setVehiclePositionsCache(payload []byte, t time.Time) {
+	vehiclePositionsCacheMu.Lock()
+	vehiclePositionsCachePayload = payload
+	vehiclePositionsCacheTime = t
+	var parsed interface{}
+	if err := json.Unmarshal(payload, &parsed); err == nil {
+		vehiclePositionsCacheParsed = parsed
+	} else {
+		vehiclePositionsCacheParsed = nil
+	}
+	vehiclePositionsCacheMu.Unlock()
+}
 
 var (
 	tripUpdatesCacheMu      sync.RWMutex
@@ -102,10 +116,7 @@ func main() {
 	// Load previously cached vehicle positions from disk so they're
 	// immediately available, even before the first upstream fetch completes.
 	if data, err := os.ReadFile(vehiclePositionsCacheFilePath); err == nil && len(data) > 0 {
-		vehiclePositionsCacheMu.Lock()
-		vehiclePositionsCachePayload = data
-		vehiclePositionsCacheTime = time.Now()
-		vehiclePositionsCacheMu.Unlock()
+		setVehiclePositionsCache(data, time.Now())
 		log.Println("Loaded cached vehicle positions from disk")
 	} else {
 		log.Println("No disk cache for vehicle positions, waiting for initial fetch...")
@@ -590,10 +601,9 @@ func refreshVehiclePositions() error {
 
 	payload := enrichVehiclePositions(marshaled)
 
+	setVehiclePositionsCache(payload, time.Now())
 	vehiclePositionsCacheMu.Lock()
-	vehiclePositionsCachePayload = payload
 	vehiclePositionsCacheErr = nil
-	vehiclePositionsCacheTime = time.Now()
 	vehiclePositionsCacheMu.Unlock()
 
 	// Persist to disk so the cache survives restarts and is always available.
@@ -1638,6 +1648,7 @@ func refreshDatafeeds() error {
 	tripsData.Store(nil)
 	stopsData.Store(nil)
 	routesData.Store(nil)
+	invalidateTripsCache()
 
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
 		log.Println("Using existing datafeed file")
