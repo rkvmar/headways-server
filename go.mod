@@ -11,6 +11,8 @@ require (
 
 require github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs v1.0.0
 
+require github.com/graphql-go/graphql v0.8.1 // indirect
+
 require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect

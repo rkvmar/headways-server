@@ -98,7 +98,6 @@ func main() {
 	// populate before the blocking refreshDatafeeds call.
 	go runDatafeedsRefresher()
 	go runVehiclePositionsRefresher()
-	go runTripUpdatesRefresher()
 
 	// Load previously cached vehicle positions from disk so they're
 	// immediately available, even before the first upstream fetch completes.
@@ -127,17 +126,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/tripupdates", tripUpdatesHandler)
-	mux.HandleFunc("/vehiclepositions", vehiclePositionsHandler)
-	mux.HandleFunc("/routeshapes", routeShapesHandler)
-	mux.HandleFunc("/tripdetail", tripDetailHandler)
-	// mux.HandleFunc("/blockschedule", blockScheduleHandler)
-	mux.HandleFunc("/datafeeds/zip", datafeedsZipHandler)
-	mux.HandleFunc("/datafeeds", datafeedsGTFSIndexHandler)
-	mux.HandleFunc("/datafeeds/json", datafeedsJSONIndexHandler)
-	mux.HandleFunc("/datafeeds/json/", datafeedsJSONFileHandler)
-	mux.HandleFunc("/datafeeds/", datafeedsGTFSFileHandler)
-	mux.HandleFunc("/vehicletypes", vehicleTypesHandler)
+	mux.HandleFunc("/api", graphQLHandler)
 
 	// Image upload and management
 	mux.HandleFunc("/api/images/upload", createImageHandler)
