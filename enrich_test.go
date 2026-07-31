@@ -29,4 +29,7 @@ func TestEnrichVehiclePositionsTripInfo(t *testing.T) {
 	if trip["shapeId"] == "" {
 		t.Fatalf("expected shapeId to be enriched")
 	}
+	if vehicle["routeShortName"] == "" {
+		t.Fatalf("expected routeShortName to be enriched")
+	}
 }

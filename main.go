@@ -276,6 +276,7 @@ func refreshTripUpdates() error {
 func enrichVehiclePositions(payload []byte) []byte {
 	stopsData := loadStopsData()
 	tripsData := loadTripsData()
+	routesData := loadRoutesData()
 
 	var feed map[string]interface{}
 	if err := json.Unmarshal(payload, &feed); err != nil {
@@ -349,6 +350,14 @@ func enrichVehiclePositions(payload []byte) []byte {
 							trip["tripId"] = effTrip
 							trip["shapeId"] = effInfo.shape_id
 						}
+					}
+				}
+
+				// Enrich with the route short name so the frontend can label
+				// vehicles on the map without fetching the routes table first.
+				if routeID, _ := trip["routeId"].(string); routeID != "" {
+					if route, ok := routesData[routeID]; ok && route.shortName != "" {
+						vehicle["routeShortName"] = route.shortName
 					}
 				}
 			}

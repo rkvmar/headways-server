@@ -155,6 +155,7 @@ var vehicleDataType = graphql.NewObject(graphql.ObjectConfig{
 				return m["icon_code"], nil
 			},
 		},
+		"routeShortName": &graphql.Field{Type: graphql.String},
 	},
 })
 
