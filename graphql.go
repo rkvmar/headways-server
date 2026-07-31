@@ -100,7 +100,7 @@ var vehicleFeedDataType = graphql.NewObject(graphql.ObjectConfig{
 var entityType = graphql.NewObject(graphql.ObjectConfig{
 	Name: "Entity",
 	Fields: graphql.Fields{
-		"id":   &graphql.Field{Type: graphql.String},
+		"id": &graphql.Field{Type: graphql.String},
 		"vehicle": &graphql.Field{
 			Type: vehicleDataType,
 			Resolve: func(p graphql.ResolveParams) (interface{}, error) {
@@ -161,13 +161,19 @@ var vehicleDataType = graphql.NewObject(graphql.ObjectConfig{
 var tripDataType = graphql.NewObject(graphql.ObjectConfig{
 	Name: "TripData",
 	Fields: graphql.Fields{
-		"tripId":             &graphql.Field{Type: graphql.String},
-		"routeId":            &graphql.Field{Type: graphql.String},
-		"directionId":        &graphql.Field{Type: graphql.Int},
-		"delay":              &graphql.Field{Type: graphql.Int},
-		"startTime":          &graphql.Field{Type: graphql.String},
-		"startDate":          &graphql.Field{Type: graphql.String},
+		"tripId":               &graphql.Field{Type: graphql.String},
+		"routeId":              &graphql.Field{Type: graphql.String},
+		"directionId":          &graphql.Field{Type: graphql.Int},
+		"delay":                &graphql.Field{Type: graphql.Int},
+		"startTime":            &graphql.Field{Type: graphql.String},
+		"startDate":            &graphql.Field{Type: graphql.String},
 		"scheduleRelationship": &graphql.Field{Type: graphql.String},
+		"tripInfoFound":        &graphql.Field{Type: graphql.Boolean},
+		"tripHeadsign":         &graphql.Field{Type: graphql.String},
+		"serviceId":            &graphql.Field{Type: graphql.String},
+		"shapeId":              &graphql.Field{Type: graphql.String},
+		"blockId":              &graphql.Field{Type: graphql.String},
+		"tripShortName":        &graphql.Field{Type: graphql.String},
 	},
 })
 
@@ -232,16 +238,16 @@ var stopType = graphql.NewObject(graphql.ObjectConfig{
 var tripRowType = graphql.NewObject(graphql.ObjectConfig{
 	Name: "Trip",
 	Fields: graphql.Fields{
-		"trip_id":                 &graphql.Field{Type: graphql.String},
-		"route_id":                &graphql.Field{Type: graphql.String},
-		"service_id":              &graphql.Field{Type: graphql.String},
-		"trip_headsign":           &graphql.Field{Type: graphql.String},
-		"direction_id":            &graphql.Field{Type: graphql.String},
-		"shape_id":                &graphql.Field{Type: graphql.String},
-		"block_id":                &graphql.Field{Type: graphql.String},
-		"trip_short_name":         &graphql.Field{Type: graphql.String},
-		"wheelchair_accessible":   &graphql.Field{Type: graphql.String},
-		"bikes_allowed":           &graphql.Field{Type: graphql.String},
+		"trip_id":               &graphql.Field{Type: graphql.String},
+		"route_id":              &graphql.Field{Type: graphql.String},
+		"service_id":            &graphql.Field{Type: graphql.String},
+		"trip_headsign":         &graphql.Field{Type: graphql.String},
+		"direction_id":          &graphql.Field{Type: graphql.String},
+		"shape_id":              &graphql.Field{Type: graphql.String},
+		"block_id":              &graphql.Field{Type: graphql.String},
+		"trip_short_name":       &graphql.Field{Type: graphql.String},
+		"wheelchair_accessible": &graphql.Field{Type: graphql.String},
+		"bikes_allowed":         &graphql.Field{Type: graphql.String},
 	},
 })
 
@@ -309,16 +315,16 @@ func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
 	result := make([]interface{}, 0, len(trips))
 	for _, t := range trips {
 		result = append(result, map[string]interface{}{
-			"trip_id":                 t.trip_id,
-			"route_id":                t.route_id,
-			"service_id":              t.service_id,
-			"trip_headsign":           t.trip_headsign,
-			"direction_id":            t.direction_id,
-			"shape_id":                t.shape_id,
-			"block_id":                t.block_id,
-			"trip_short_name":         t.trip_short_name,
-			"wheelchair_accessible":   t.wheelchair_accessible,
-			"bikes_allowed":           t.bikes_allowed,
+			"trip_id":               t.trip_id,
+			"route_id":              t.route_id,
+			"service_id":            t.service_id,
+			"trip_headsign":         t.trip_headsign,
+			"direction_id":          t.direction_id,
+			"shape_id":              t.shape_id,
+			"block_id":              t.block_id,
+			"trip_short_name":       t.trip_short_name,
+			"wheelchair_accessible": t.wheelchair_accessible,
+			"bikes_allowed":         t.bikes_allowed,
 		})
 	}
 	tripsCache = result

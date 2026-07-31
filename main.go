@@ -54,11 +54,11 @@ var routeShapesCache []byte
 var routeShapesCacheMu sync.RWMutex
 
 var (
-	vehiclePositionsCacheMu         sync.RWMutex
-	vehiclePositionsCachePayload    []byte
-	vehiclePositionsCacheParsed     interface{}
-	vehiclePositionsCacheErr        error
-	vehiclePositionsCacheTime       time.Time
+	vehiclePositionsCacheMu      sync.RWMutex
+	vehiclePositionsCachePayload []byte
+	vehiclePositionsCacheParsed  interface{}
+	vehiclePositionsCacheErr     error
+	vehiclePositionsCacheTime    time.Time
 )
 
 func setVehiclePositionsCache(payload []byte, t time.Time) {
@@ -275,6 +275,7 @@ func refreshTripUpdates() error {
 
 func enrichVehiclePositions(payload []byte) []byte {
 	stopsData := loadStopsData()
+	tripsData := loadTripsData()
 
 	var feed map[string]interface{}
 	if err := json.Unmarshal(payload, &feed); err != nil {
@@ -319,6 +320,37 @@ func enrichVehiclePositions(payload []byte) []byte {
 					delay = -int32(rand.Intn(120) + 30)
 				}
 				trip["delay"] = delay
+			}
+
+			// Enrich with static trip info so the frontend doesn't have to fetch
+			// the full trips table. Vehicles without a static trip are flagged so
+			// the frontend can skip them, mirroring its old trips-table lookup.
+			tripID, _ := trip["tripId"].(string)
+			if tripInfo, found := tripsData[tripID]; found {
+				trip["tripInfoFound"] = true
+				trip["tripHeadsign"] = tripInfo.trip_headsign
+				trip["serviceId"] = tripInfo.service_id
+				trip["shapeId"] = tripInfo.shape_id
+				trip["blockId"] = tripInfo.block_id
+				trip["tripShortName"] = tripInfo.trip_short_name
+				if routeID, _ := trip["routeId"].(string); routeID == "" {
+					trip["routeId"] = tripInfo.route_id
+				}
+				if _, hasDir := trip["directionId"]; !hasDir {
+					d, _ := strconv.Atoi(tripInfo.direction_id)
+					trip["directionId"] = d
+				}
+				// If the realtime route doesn't match the static route for this
+				// trip, fall back to the first trip on the realtime route (the
+				// frontend used to do this lookup against the full trips table).
+				if routeID, _ := trip["routeId"].(string); routeID != "" && routeID != tripInfo.route_id {
+					if effTrip := firstTripOnRoute(routeID); effTrip != "" {
+						if effInfo, ok := tripsData[effTrip]; ok {
+							trip["tripId"] = effTrip
+							trip["shapeId"] = effInfo.shape_id
+						}
+					}
+				}
 			}
 		}
 
@@ -1648,6 +1680,8 @@ func refreshDatafeeds() error {
 	tripsData.Store(nil)
 	stopsData.Store(nil)
 	routesData.Store(nil)
+	routeFirstTripOnce = sync.Once{}
+	routeFirstTrip = nil
 	invalidateTripsCache()
 
 	if _, err := os.Stat(datafeedsFilePath); err == nil {
@@ -1874,7 +1908,23 @@ var (
 
 	stopTimesData   atomic.Pointer[map[string][]StopTimeInfo]
 	stopTimesDataMu sync.Mutex
+
+	routeFirstTrip     map[string]string
+	routeFirstTripOnce sync.Once
 )
+
+func firstTripOnRoute(routeID string) string {
+	routeFirstTripOnce.Do(func() {
+		m := make(map[string]string)
+		for _, t := range loadTripsData() {
+			if _, ok := m[t.route_id]; !ok {
+				m[t.route_id] = t.trip_id
+			}
+		}
+		routeFirstTrip = m
+	})
+	return routeFirstTrip[routeID]
+}
 
 type RouteInfo struct {
 	shortName string
