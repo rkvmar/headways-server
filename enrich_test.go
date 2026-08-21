@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -9,7 +11,32 @@ import (
 func TestEnrichVehiclePositionsTripInfo(t *testing.T) {
 	datafeedsDir = filepath.Join("data", "gtfs")
 
-	payload := []byte(`{"entity":[{"id":"e1","vehicle":{"trip":{"tripId":"UC:0_yyllfs1"},"stopId":""}}]}`)
+	// Use a trip that exists in the currently downloaded feed; upstream
+	// agencies rotate trip IDs, so hardcoding one rots.
+	file, err := os.Open(filepath.Join(datafeedsDir, "trips.txt"))
+	if err != nil {
+		t.Skipf("no trips.txt available: %v", err)
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	headers, err := reader.Read()
+	if err != nil {
+		t.Skipf("empty trips.txt: %v", err)
+	}
+	tripIDIdx := -1
+	for i, h := range headers {
+		if h == "trip_id" {
+			tripIDIdx = i
+		}
+	}
+	record, err := reader.Read()
+	if err != nil || tripIDIdx < 0 || record[tripIDIdx] == "" {
+		t.Skipf("no usable trip row: %v", err)
+	}
+	tripID := record[tripIDIdx]
+
+	payload := []byte(`{"entity":[{"id":"e1","vehicle":{"trip":{"tripId":"` + tripID + `"},"stopId":""}}]}`)
 	out := enrichVehiclePositions(payload)
 
 	var feed map[string]interface{}

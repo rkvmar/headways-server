@@ -1674,17 +1674,19 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 }
 
 func refreshDatafeeds() error {
-	routeShapesCacheMu.Lock()
-	routeShapesCache = nil
-	routeShapesCacheMu.Unlock()
+	if err := downloadDatafeed(datafeedsFilePath); err != nil {
+		return fmt.Errorf("failed to download datafeed: %w", err)
+	}
 
-	shapesCacheMu.Lock()
-	shapesCache = nil
-	shapesOnce = sync.Once{}
-	shapesCacheMu.Unlock()
+	if err := unzipDatafeed(datafeedsFilePath, datafeedsDir); err != nil {
+		return fmt.Errorf("failed to unzip datafeed: %w", err)
+	}
 
-	// Invalidate in-memory caches atomically. The next call to each load function
-	// will trigger a fresh reload via double-checked locking.
+	// Invalidate in-memory caches only after the new files are fully on disk.
+	// Invalidating before the download/unzip left a window where a concurrent
+	// loadTripsData() could read a missing/partial trips.txt and cache the
+	// empty result (non-nil map fast-path), breaking trip lookups until the
+	// next refresh. Readers keep serving the old map during the swap.
 	stopTimesData.Store(nil)
 	tripsData.Store(nil)
 	stopsData.Store(nil)
@@ -1693,21 +1695,14 @@ func refreshDatafeeds() error {
 	routeFirstTrip = nil
 	invalidateTripsCache()
 
-	if _, err := os.Stat(datafeedsFilePath); err == nil {
-		log.Println("Using existing datafeed file")
-	} else {
-		if err := downloadDatafeed(datafeedsFilePath); err != nil {
-			return fmt.Errorf("failed to download datafeed: %w", err)
-		}
-	}
+	routeShapesCacheMu.Lock()
+	routeShapesCache = nil
+	routeShapesCacheMu.Unlock()
 
-	if _, err := os.Stat(datafeedsDir); err == nil {
-		log.Println("Using existing extracted datafeed directory")
-	} else {
-		if err := unzipDatafeed(datafeedsFilePath, datafeedsDir); err != nil {
-			return fmt.Errorf("failed to unzip datafeed: %w", err)
-		}
-	}
+	shapesCacheMu.Lock()
+	shapesCache = nil
+	shapesOnce = sync.Once{}
+	shapesCacheMu.Unlock()
 
 	jsonFiles, err := indexJSONFiles(datafeedsDir)
 	if err != nil {
