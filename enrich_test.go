@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEnrichVehiclePositionsTripInfo(t *testing.T) {
@@ -59,4 +60,93 @@ func TestEnrichVehiclePositionsTripInfo(t *testing.T) {
 	if vehicle["routeShortName"] == "" {
 		t.Fatalf("expected routeShortName to be enriched")
 	}
+}
+
+func TestStopDepartures(t *testing.T) {
+	datafeedsDir = filepath.Join("data", "gtfs")
+
+	if got := parseGTFSSeconds("25:10:05"); got != 25*3600+10*60+5 {
+		t.Fatalf("parseGTFSSeconds(25:10:05) = %d", got)
+	}
+
+	now := time.Now().In(loadAgencyTimezone())
+	if len(todaysServiceIDs(now)) == 0 {
+		t.Fatalf("expected active services today, calendar parsing is broken")
+	}
+
+	// Sample real served stop IDs from stop_times.txt; stops.json starts
+	// with MTC placeholder hubs that have no scheduled service here.
+	file, err := os.Open(filepath.Join(datafeedsDir, "stop_times.txt"))
+	if err != nil {
+		t.Skipf("no stop_times.txt available: %v", err)
+	}
+	defer file.Close()
+	r := csv.NewReader(file)
+	r.FieldsPerRecord = -1
+	if _, err := r.Read(); err != nil {
+		t.Skipf("empty stop_times.txt: %v", err)
+	}
+	stopIDs := make(map[string]bool)
+	for len(stopIDs) < 5 {
+		rec, err := r.Read()
+		if err != nil {
+			break
+		}
+		if id := rec[1]; id != "" {
+			stopIDs[id] = true
+		}
+	}
+
+	found := false
+	for s := range stopIDs {
+		deps := stopDepartures(map[string]bool{s: true}, 30)
+		if len(deps) > 30 {
+			t.Fatalf("expected at most 30 departures, got %d", len(deps))
+		}
+		var last int64
+		for _, d := range deps {
+			ts := d["departure_timestamp"].(int64)
+			if ts < last {
+				t.Fatalf("departures not sorted ascending")
+			}
+			last = ts
+			if d["route_short_name"] == "" || d["trip_headsign"] == "" {
+				t.Fatalf("expected enriched departure fields, got %+v", d)
+			}
+		}
+		if len(deps) > 0 {
+			found = true
+			break
+		}
+	}
+	// Owl-hours dead zone (midnight-6am local): no upcoming departures is valid.
+	if now.Hour() >= 0 && now.Hour() < 6 {
+		found = true
+	}
+	if !found {
+		t.Fatalf("no departures found for any sampled stop during daytime hours")
+	}
+}
+
+func TestStopGroups(t *testing.T) {
+	datafeedsDir = filepath.Join("data", "gtfs")
+
+	groups := loadStopGroups()
+	if len(groups) == 0 {
+		t.Fatalf("expected stop groups, got none")
+	}
+
+	merged := 0
+	for _, g := range groups {
+		if len(g.Members) > 1 {
+			merged++
+			if g.Name == "" || g.Lat == 0 || g.Lon == 0 {
+				t.Fatalf("group %s missing name/coords: %+v", g.GroupID, g)
+			}
+		}
+	}
+	if merged == 0 {
+		t.Fatalf("expected at least one multi-stop station group")
+	}
+	t.Logf("%d groups, %d with multiple stops", len(groups), merged)
 }

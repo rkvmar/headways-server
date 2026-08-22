@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,9 +28,17 @@ func init() {
 	q := graphql.NewObject(graphql.ObjectConfig{
 		Name: "Query",
 		Fields: graphql.Fields{
-			"agencies":    &graphql.Field{Type: graphql.NewList(agencyType), Resolve: resolveAgencies},
-			"routes":      &graphql.Field{Type: graphql.NewList(routeType), Resolve: resolveRoutes},
-			"stops":       &graphql.Field{Type: graphql.NewList(stopType), Resolve: resolveStops},
+			"agencies":   &graphql.Field{Type: graphql.NewList(agencyType), Resolve: resolveAgencies},
+			"routes":     &graphql.Field{Type: graphql.NewList(routeType), Resolve: resolveRoutes},
+			"stops":      &graphql.Field{Type: graphql.NewList(stopType), Resolve: resolveStops},
+			"stopGroups": &graphql.Field{Type: graphql.NewList(stopGroupType), Resolve: resolveStopGroups},
+			"stop": &graphql.Field{
+				Type: stopDetailType,
+				Args: graphql.FieldConfigArgument{
+					"stopId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+				},
+				Resolve: resolveStop,
+			},
 			"trips":       &graphql.Field{Type: graphql.NewList(tripRowType), Resolve: resolveTrips},
 			"vehicleFeed": &graphql.Field{Type: vehicleFeedEnvelopeType, Resolve: resolveVehicleFeed},
 			"tripDetail": &graphql.Field{
@@ -236,6 +245,42 @@ var stopType = graphql.NewObject(graphql.ObjectConfig{
 	},
 })
 
+var departureType = graphql.NewObject(graphql.ObjectConfig{
+	Name: "Departure",
+	Fields: graphql.Fields{
+		"trip_id":             &graphql.Field{Type: graphql.String},
+		"route_id":            &graphql.Field{Type: graphql.String},
+		"route_short_name":    &graphql.Field{Type: graphql.String},
+		"trip_headsign":       &graphql.Field{Type: graphql.String},
+		"direction_id":        &graphql.Field{Type: graphql.String},
+		"arrival_time":        &graphql.Field{Type: graphql.String},
+		"departure_time":      &graphql.Field{Type: graphql.String},
+		"departure_timestamp": &graphql.Field{Type: graphql.Int},
+	},
+})
+
+var stopDetailType = graphql.NewObject(graphql.ObjectConfig{
+	Name: "StopDetail",
+	Fields: graphql.Fields{
+		"stop_id":    &graphql.Field{Type: graphql.String},
+		"stop_name":  &graphql.Field{Type: graphql.String},
+		"stop_lat":   &graphql.Field{Type: graphql.String},
+		"stop_lon":   &graphql.Field{Type: graphql.String},
+		"departures": &graphql.Field{Type: graphql.NewList(departureType)},
+	},
+})
+
+var stopGroupType = graphql.NewObject(graphql.ObjectConfig{
+	Name: "StopGroup",
+	Fields: graphql.Fields{
+		"group_id":   &graphql.Field{Type: graphql.String},
+		"group_name": &graphql.Field{Type: graphql.String},
+		"stop_lat":   &graphql.Field{Type: graphql.Float},
+		"stop_lon":   &graphql.Field{Type: graphql.Float},
+		"route_id":   &graphql.Field{Type: graphql.String},
+	},
+})
+
 var tripRowType = graphql.NewObject(graphql.ObjectConfig{
 	Name: "Trip",
 	Fields: graphql.Fields{
@@ -296,6 +341,55 @@ func resolveRoutes(p graphql.ResolveParams) (interface{}, error) {
 func resolveStops(p graphql.ResolveParams) (interface{}, error) {
 	path := filepath.Join(tripDataDir, "stops.json")
 	return readJSONArray(path)
+}
+
+func resolveStopGroups(p graphql.ResolveParams) (interface{}, error) {
+	groups := loadStopGroups()
+	out := make([]interface{}, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, map[string]interface{}{
+			"group_id":   g.GroupID,
+			"group_name": g.Name,
+			"stop_lat":   g.Lat,
+			"stop_lon":   g.Lon,
+			"route_id":   g.RouteID,
+		})
+	}
+	return out, nil
+}
+
+func resolveStop(p graphql.ResolveParams) (interface{}, error) {
+	stopID, _ := p.Args["stopId"].(string)
+	if stopID == "" {
+		return nil, nil
+	}
+
+	// Station group: merge departures across all member stops.
+	if group, ok := loadStopGroups()[stopID]; ok && len(group.Members) > 0 {
+		members := make(map[string]bool, len(group.Members))
+		for _, id := range group.Members {
+			members[id] = true
+		}
+		return map[string]interface{}{
+			"stop_id":    stopID,
+			"stop_name":  group.Name,
+			"stop_lat":   strconv.FormatFloat(group.Lat, 'f', -1, 64),
+			"stop_lon":   strconv.FormatFloat(group.Lon, 'f', -1, 64),
+			"departures": stopDepartures(members, 30),
+		}, nil
+	}
+
+	stop, ok := loadStopsData()[stopID]
+	if !ok {
+		return nil, nil
+	}
+	return map[string]interface{}{
+		"stop_id":    stop.stop_id,
+		"stop_name":  stop.stop_name,
+		"stop_lat":   stop.stop_lat,
+		"stop_lon":   stop.stop_lon,
+		"departures": stopDepartures(map[string]bool{stopID: true}, 30),
+	}, nil
 }
 
 func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
