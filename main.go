@@ -238,6 +238,7 @@ func enrichVehiclePositions(payload []byte) []byte {
 	stopsData := loadStopsData()
 	tripsData := loadTripsData()
 	routesData := loadRoutesData()
+	loc := loadAgencyTimezone()
 	var feed map[string]interface{}
 	if err := json.Unmarshal(payload, &feed); err != nil {
 		return payload
@@ -246,6 +247,8 @@ func enrichVehiclePositions(payload []byte) []byte {
 	if !ok {
 		return payload
 	}
+	now := time.Now().In(loc)
+	nowSec := now.Hour()*3600 + now.Minute()*60 + now.Second()
 	for _, e := range entities {
 		entity, ok := e.(map[string]interface{})
 		if !ok {
@@ -288,6 +291,21 @@ func enrichVehiclePositions(payload []byte) []byte {
 				if routeID, _ := trip["routeId"].(string); routeID != "" {
 					if route, ok := routesData[routeID]; ok && route.shortName != "" {
 						vehicle["routeShortName"] = route.shortName
+					}
+				}
+			}
+		}
+		if trip != nil {
+			if tripID, _ := trip["tripId"].(string); tripID != "" {
+				if stopID, _ := vehicle["stopId"].(string); stopID != "" {
+					stopTimes := loadStopTimesForTrip(tripID)
+					for _, st := range stopTimes {
+						if st.stop_id == stopID {
+							scheduledSec := parseGTFSSeconds(st.departure_time)
+							delay := nowSec - scheduledSec
+							trip["delay"] = delay
+							break
+						}
 					}
 				}
 			}
