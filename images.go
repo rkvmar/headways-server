@@ -61,6 +61,9 @@ var (
 func initMongoDB() error {
 	uri := os.Getenv("MONGODB_URI")
 	if uri == "" {
+		uri = os.Getenv("MONGO_URI")
+	}
+	if uri == "" {
 		uri = "mongodb://localhost:27017"
 	}
 
