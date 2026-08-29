@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -21,9 +24,23 @@ type VehicleImage struct {
 	VehicleID   string             `bson:"vehicle_id" json:"vehicle_id"`
 	AgencyCode  string             `bson:"agency_code,omitempty" json:"agency_code,omitempty"`
 	ImageURL    string             `bson:"image_url" json:"image_url"`
+	ImageData   primitive.Binary   `bson:"image_data,omitempty" json:"-"`
+	ContentType string             `bson:"content_type,omitempty" json:"-"`
 	Attribution string             `bson:"attribution,omitempty" json:"attribution,omitempty"`
 	Description string             `bson:"description,omitempty" json:"description,omitempty"`
 	UploadedAt  time.Time          `bson:"uploaded_at" json:"uploaded_at"`
+}
+
+// maxUploadBytes caps accepted upload size.
+const maxUploadBytes = 10 << 20 // 10 MB
+
+// uploadableContentType reports whether the given MIME type is an image we'll accept.
+func uploadableContentType(ct string) bool {
+	switch ct {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	}
+	return false
 }
 
 // createImageRequest is the JSON body for creating an image record.
@@ -79,7 +96,8 @@ func closeMongoDB() {
 // --- HTTP Handlers ---
 
 // createImageHandler handles POST /api/images/upload
-// Accepts JSON with: image_url, vehicle_id, agency_code, attribution, description
+// Accepts either multipart/form-data (a `file` part + fields) for direct upload,
+// or JSON with image_url, vehicle_id, agency_code, attribution, description.
 func createImageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -91,27 +109,69 @@ func createImageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req createImageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
+	vehID, agency, attribution, description := "", "", "", ""
+	var imageURL string
+	var imageData []byte
+	var contentType string
+	hasFile := false
+
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		// Limit total request size to avoid unbounded memory.
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+			http.Error(w, fmt.Sprintf("failed to parse upload: %v", err), http.StatusBadRequest)
+			return
+		}
+		vehID = r.FormValue("vehicle_id")
+		agency = r.FormValue("agency_code")
+		attribution = r.FormValue("attribution")
+		description = r.FormValue("description")
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "file is required", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		if !uploadableContentType(header.Header.Get("Content-Type")) {
+			http.Error(w, "unsupported file type; use JPEG, PNG, GIF, or WebP", http.StatusUnsupportedMediaType)
+			return
+		}
+		imageData, err = io.ReadAll(file)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to read file: %v", err), http.StatusInternalServerError)
+			return
+		}
+		contentType = header.Header.Get("Content-Type")
+		hasFile = true
+	} else {
+		var req createImageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		vehID, agency = req.VehicleID, req.AgencyCode
+		attribution = req.Attribution
+		description = req.Description
+		imageURL = req.ImageURL
 	}
 
-	if req.VehicleID == "" {
+	if vehID == "" {
 		http.Error(w, "vehicle_id is required", http.StatusBadRequest)
 		return
 	}
-	if req.ImageURL == "" {
+	if !hasFile && imageURL == "" {
 		http.Error(w, "image_url is required", http.StatusBadRequest)
 		return
 	}
 
 	img := VehicleImage{
-		VehicleID:   req.VehicleID,
-		AgencyCode:  req.AgencyCode,
-		ImageURL:    req.ImageURL,
-		Attribution: req.Attribution,
-		Description: req.Description,
+		VehicleID:   vehID,
+		AgencyCode:  agency,
+		ImageURL:    imageURL,
+		ImageData:   primitive.Binary{Data: imageData, Subtype: bsontype.BinaryGeneric},
+		ContentType: contentType,
+		Attribution: attribution,
+		Description: description,
 		UploadedAt:  time.Now(),
 	}
 
@@ -126,10 +186,55 @@ func createImageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	img.ID = result.InsertedID.(primitive.ObjectID)
+	if hasFile {
+		// Serve uploaded bytes back through our own endpoint.
+		img.ImageURL = "/api/images/file/" + img.ID.Hex()
+		// persist the derived serving URL
+		if _, err := imagesCollection.UpdateOne(ctx, bson.M{"_id": img.ID},
+			bson.M{"$set": bson.M{"image_url": img.ImageURL}}); err != nil {
+			log.Printf("mongo update image_url failed: %v", err)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(img)
+}
+
+// serveImageFileHandler serves stored upload bytes at GET /api/images/file/{id}
+func serveImageFileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if imagesCollection == nil {
+		http.Error(w, "MongoDB is not connected", http.StatusServiceUnavailable)
+		return
+	}
+	idStr := r.PathValue("id")
+	objID, err := primitive.ObjectIDFromHex(idStr)
+	if err != nil {
+		http.Error(w, "invalid image id", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var img VehicleImage
+	if err := imagesCollection.FindOne(ctx, bson.M{"_id": objID}).Decode(&img); err != nil {
+		http.Error(w, "image not found", http.StatusNotFound)
+		return
+	}
+	if len(img.ImageData.Data) == 0 {
+		http.Error(w, "image has no uploaded file", http.StatusNotFound)
+		return
+	}
+	ct := img.ContentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Write(img.ImageData.Data)
 }
 
 // vehicleImagesHandler handles GET /api/images/vehicle/{vehicle_id}
