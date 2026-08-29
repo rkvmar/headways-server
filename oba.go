@@ -668,7 +668,9 @@ func (r *seattleRegion) refreshPositions() error {
 	r.positionsMu.Unlock()
 
 	if r.positionsFile != "" {
-		if err := os.WriteFile(r.positionsFile, payload, 0o644); err != nil {
+		if err := os.MkdirAll(filepath.Dir(r.positionsFile), 0o755); err != nil {
+			log.Printf("[seattle] failed to create cache dir: %v", err)
+		} else if err := os.WriteFile(r.positionsFile, payload, 0o644); err != nil {
 			log.Printf("[seattle] failed to persist vehicle positions: %v", err)
 		}
 	}

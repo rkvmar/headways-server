@@ -549,7 +549,9 @@ func refreshVehiclePositions() error {
 	vehiclePositionsCacheMu.Lock()
 	vehiclePositionsCacheErr = nil
 	vehiclePositionsCacheMu.Unlock()
-	if err := os.WriteFile(vehiclePositionsCacheFilePath, payload, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(vehiclePositionsCacheFilePath), 0o755); err != nil {
+		log.Printf("Failed to create cache dir: %v", err)
+	} else if err := os.WriteFile(vehiclePositionsCacheFilePath, payload, 0o644); err != nil {
 		log.Printf("Failed to persist vehicle positions to disk: %v", err)
 	}
 	if tripDetailsDir != "" {
