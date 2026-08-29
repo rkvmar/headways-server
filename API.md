@@ -57,6 +57,29 @@ curl -X POST http://localhost:8081/api \
   -d '{"query": "{ stop(stopId: \"70011\") { stop_name departures { route_short_name trip_headsign departure_time departure_timestamp } } }"}'
 ```
 
+## Sound Transit (Seattle / Puget Sound) region
+
+The server can also serve the Sound Transit region from the OneBusAway API as a
+parallel feed alongside the Bay Area (511) feed. Set `SOUND_TRANSIT_API_KEY` in
+`.env` to enable it; without the key the region is skipped and the Bay Area
+feed is unaffected.
+
+Static GTFS is pulled from the consolidated Puget Sound feed
+(`gtfs.sound.obaweb.org/.../gtfs_puget_sound_consolidated.zip`), real-time
+vehicle positions from the OBA `vehicles-for-agency/40` endpoint. Real-time
+currently covers Sound Transit's 1 Line, 2 Line, T Line and ST Express bus.
+
+Pass `region: "seattle"` to any query (default is the Bay Area feed):
+
+```bash
+curl -X POST http://localhost:8081/api \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "{ vehicleFeed(region: \"seattle\") { fetchedAt data { id vehicle { trip { tripId routeId delay } position { latitude longitude } routeShortName } } } }"}'
+```
+
+Other queries accepting `region: "seattle"`: `agencies`, `routes`, `stops`,
+`stopGroups`, `stop`, `trips`, `tripDetail`, `shape`.
+
 ---
 
 ## Queries

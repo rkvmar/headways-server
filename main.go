@@ -105,6 +105,7 @@ func main() {
 	}
 	go runDatafeedsRefresher()
 	go runVehiclePositionsRefresher()
+	startSeattleRegion()
 	if data, err := os.ReadFile(vehiclePositionsCacheFilePath); err == nil && len(data) > 0 {
 		setVehiclePositionsCache(data, time.Now())
 		log.Println("Loaded cached vehicle positions from disk")

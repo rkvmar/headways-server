@@ -15,6 +15,16 @@ import (
 
 var gqlSchema graphql.Schema
 
+var regionArg = graphql.FieldConfigArgument{
+	"region": &graphql.ArgumentConfig{Type: graphql.String},
+}
+
+func isSeattle(p graphql.ResolveParams) bool {
+	r, _ := p.Args["region"].(string)
+	return r == "seattle" || r == "sound-transit"
+}
+
+
 var tripsCache []interface{}
 var tripsCacheMu sync.RWMutex
 
@@ -28,23 +38,25 @@ func init() {
 	q := graphql.NewObject(graphql.ObjectConfig{
 		Name: "Query",
 		Fields: graphql.Fields{
-			"agencies":   &graphql.Field{Type: graphql.NewList(agencyType), Resolve: resolveAgencies},
-			"routes":     &graphql.Field{Type: graphql.NewList(routeType), Resolve: resolveRoutes},
-			"stops":      &graphql.Field{Type: graphql.NewList(stopType), Resolve: resolveStops},
-			"stopGroups": &graphql.Field{Type: graphql.NewList(stopGroupType), Resolve: resolveStopGroups},
+			"agencies":   &graphql.Field{Type: graphql.NewList(agencyType), Args: regionArg, Resolve: resolveAgencies},
+			"routes":     &graphql.Field{Type: graphql.NewList(routeType), Args: regionArg, Resolve: resolveRoutes},
+			"stops":      &graphql.Field{Type: graphql.NewList(stopType), Args: regionArg, Resolve: resolveStops},
+			"stopGroups": &graphql.Field{Type: graphql.NewList(stopGroupType), Args: regionArg, Resolve: resolveStopGroups},
 			"stop": &graphql.Field{
 				Type: stopDetailType,
 				Args: graphql.FieldConfigArgument{
 					"stopId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"region": &graphql.ArgumentConfig{Type: graphql.String},
 				},
 				Resolve: resolveStop,
 			},
-			"trips":       &graphql.Field{Type: graphql.NewList(tripRowType), Resolve: resolveTrips},
-			"vehicleFeed": &graphql.Field{Type: vehicleFeedEnvelopeType, Resolve: resolveVehicleFeed},
+			"trips":       &graphql.Field{Type: graphql.NewList(tripRowType), Args: regionArg, Resolve: resolveTrips},
+			"vehicleFeed": &graphql.Field{Type: vehicleFeedEnvelopeType, Args: regionArg, Resolve: resolveVehicleFeed},
 			"tripDetail": &graphql.Field{
 				Type: tripDetailType,
 				Args: graphql.FieldConfigArgument{
 					"tripId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"region": &graphql.ArgumentConfig{Type: graphql.String},
 				},
 				Resolve: resolveTripDetail,
 			},
@@ -52,6 +64,7 @@ func init() {
 				Type: graphql.NewList(graphql.NewList(graphql.Float)),
 				Args: graphql.FieldConfigArgument{
 					"shapeId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"region":  &graphql.ArgumentConfig{Type: graphql.String},
 				},
 				Resolve: resolveShape,
 			},
@@ -329,22 +342,34 @@ var stopTimeType = graphql.NewObject(graphql.ObjectConfig{
 
 // resolvers
 func resolveAgencies(p graphql.ResolveParams) (interface{}, error) {
+	if isSeattle(p) {
+		return seattle.readAgencyJSON(), nil
+	}
 	path := filepath.Join(tripDataDir, "agency.json")
 	return readJSONArray(path)
 }
 
 func resolveRoutes(p graphql.ResolveParams) (interface{}, error) {
+	if isSeattle(p) {
+		return seattle.readRoutes(), nil
+	}
 	path := filepath.Join(tripDataDir, "routes.json")
 	return readJSONArray(path)
 }
 
 func resolveStops(p graphql.ResolveParams) (interface{}, error) {
+	if isSeattle(p) {
+		return seattle.readStops(), nil
+	}
 	path := filepath.Join(tripDataDir, "stops.json")
 	return readJSONArray(path)
 }
 
 func resolveStopGroups(p graphql.ResolveParams) (interface{}, error) {
 	groups := loadStopGroups()
+	if isSeattle(p) {
+		groups = seattle.loadStopGroups()
+	}
 	out := make([]interface{}, 0, len(groups))
 	for _, g := range groups {
 		out = append(out, map[string]interface{}{
@@ -362,6 +387,33 @@ func resolveStop(p graphql.ResolveParams) (interface{}, error) {
 	stopID, _ := p.Args["stopId"].(string)
 	if stopID == "" {
 		return nil, nil
+	}
+
+	if isSeattle(p) {
+		if group, ok := seattle.loadStopGroups()[stopID]; ok && len(group.Members) > 0 {
+			members := make(map[string]bool, len(group.Members))
+			for _, id := range group.Members {
+				members[id] = true
+			}
+			return map[string]interface{}{
+				"stop_id":    stopID,
+				"stop_name":  group.Name,
+				"stop_lat":   strconv.FormatFloat(group.Lat, 'f', -1, 64),
+				"stop_lon":   strconv.FormatFloat(group.Lon, 'f', -1, 64),
+				"departures": seattle.departures(members, 30),
+			}, nil
+		}
+		stop, ok := seattle.loadStops()[stopID]
+		if !ok {
+			return nil, nil
+		}
+		return map[string]interface{}{
+			"stop_id":    stop.stop_id,
+			"stop_name":  stop.stop_name,
+			"stop_lat":   stop.stop_lat,
+			"stop_lon":   stop.stop_lon,
+			"departures": seattle.departures(map[string]bool{stopID: true}, 30),
+		}, nil
 	}
 
 	// Station group: merge departures across all member stops.
@@ -393,6 +445,26 @@ func resolveStop(p graphql.ResolveParams) (interface{}, error) {
 }
 
 func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
+	if isSeattle(p) {
+		trips := seattle.loadTrips()
+		result := make([]interface{}, 0, len(trips))
+		for _, t := range trips {
+			result = append(result, map[string]interface{}{
+				"trip_id":               t.trip_id,
+				"route_id":              t.route_id,
+				"service_id":            t.service_id,
+				"trip_headsign":         t.trip_headsign,
+				"direction_id":          t.direction_id,
+				"shape_id":              t.shape_id,
+				"block_id":              t.block_id,
+				"trip_short_name":       t.trip_short_name,
+				"wheelchair_accessible": t.wheelchair_accessible,
+				"bikes_allowed":         t.bikes_allowed,
+			})
+		}
+		return result, nil
+	}
+
 	tripsCacheMu.RLock()
 	if tripsCache != nil {
 		defer tripsCacheMu.RUnlock()
@@ -427,6 +499,17 @@ func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
 }
 
 func resolveVehicleFeed(p graphql.ResolveParams) (interface{}, error) {
+	if isSeattle(p) {
+		parsed, t := seattle.vehicles()
+		if parsed == nil {
+			return nil, nil
+		}
+		return map[string]interface{}{
+			"fetchedAt": t.UTC().Format(time.RFC3339Nano),
+			"data":      parsed,
+		}, nil
+	}
+
 	vehiclePositionsCacheMu.RLock()
 	parsed := vehiclePositionsCacheParsed
 	cacheTime := vehiclePositionsCacheTime
@@ -446,6 +529,10 @@ func resolveTripDetail(p graphql.ResolveParams) (interface{}, error) {
 	tripID, _ := p.Args["tripId"].(string)
 	if tripID == "" {
 		return nil, nil
+	}
+
+	if isSeattle(p) {
+		return seattleTripDetail(tripID)
 	}
 
 	// Try pre-computed file first
@@ -516,9 +603,19 @@ func resolveShape(p graphql.ResolveParams) (interface{}, error) {
 		return [][]float64{}, nil
 	}
 
-	coords, err := loadShapeForTrip(shapeID)
-	if err != nil || coords == nil {
-		return [][]float64{}, nil
+	var coords [][2]float64
+	if isSeattle(p) {
+		c, err := seattle.shapeForTrip(shapeID)
+		if err != nil || c == nil {
+			return [][]float64{}, nil
+		}
+		coords = c
+	} else {
+		c, err := loadShapeForTrip(shapeID)
+		if err != nil || c == nil {
+			return [][]float64{}, nil
+		}
+		coords = c
 	}
 
 	shape := make([][]float64, len(coords))
@@ -526,6 +623,54 @@ func resolveShape(p graphql.ResolveParams) (interface{}, error) {
 		shape[i] = []float64{c[0], c[1]}
 	}
 	return shape, nil
+}
+
+// seattleTripDetail builds a trip detail (schedule + shape) from the Seattle
+// region GTFS, without the pre-computed file layer.
+func seattleTripDetail(tripID string) (interface{}, error) {
+	trips := seattle.loadTrips()
+	trip, ok := trips[stripObaPrefix(tripID)]
+	if !ok {
+		return nil, nil
+	}
+	gTripID := stripObaPrefix(tripID)
+	stops := seattle.loadStops()
+	times := seattle.stopTimesForTrip(gTripID)
+	schedule := make([]map[string]interface{}, 0, len(times))
+	for _, st := range times {
+		stop := stops[st.stop_id]
+		schedule = append(schedule, map[string]interface{}{
+			"stop_id":        st.stop_id,
+			"stop_sequence":  st.stop_sequence,
+			"arrival_time":   st.arrival_time,
+			"departure_time": st.departure_time,
+			"stop_name":      stop.stop_name,
+			"stop_lat":       stop.stop_lat,
+			"stop_lon":       stop.stop_lon,
+		})
+	}
+	var shapeCoords [][2]float64
+	if trip.shape_id != "" {
+		if c, err := seattle.shapeForTrip(trip.shape_id); err == nil {
+			shapeCoords = c
+		}
+	}
+	shape := make([][]float64, len(shapeCoords))
+	for i, c := range shapeCoords {
+		shape[i] = []float64{c[0], c[1]}
+	}
+	return map[string]interface{}{
+		"trip_id":         trip.trip_id,
+		"route_id":        trip.route_id,
+		"service_id":      trip.service_id,
+		"trip_headsign":   trip.trip_headsign,
+		"direction_id":    trip.direction_id,
+		"shape_id":        trip.shape_id,
+		"block_id":        trip.block_id,
+		"trip_short_name": trip.trip_short_name,
+		"shape":           shape,
+		"schedule":        schedule,
+	}, nil
 }
 
 func readJSONArray(path string) ([]interface{}, error) {
