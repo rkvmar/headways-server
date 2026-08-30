@@ -1,16 +1,5 @@
 package main
 
-// Sound Transit (Seattle / Puget Sound) region via the OneBusAway (OBA) API.
-//
-// This runs as a self-contained second region beside the existing Bay Area
-// (511) region. The existing server is built around single-region global
-// state, so rather than parameterizing every loader, the Seattle region keeps
-// its own directory paths and caches. It reuses the region-agnostic helpers
-// (zip/CSV/json streaming) from main.go.
-//
-// ponytail: duplicated loader logic vs the Bay Area region; extracted into a
-// shared Region type if a third region ever arrives.
-
 import (
 	"encoding/json"
 	"log"
@@ -28,17 +17,11 @@ import (
 const (
 	obaBaseURL     = "https://api.pugetsound.onebusaway.org/api/where"
 	obaSoundAgency = "40"
-	// Consolidated Puget Sound GTFS, includes Sound Transit (agency 40).
-	obaGTFSURL = "https://gtfs.sound.obaweb.org/prod/gtfs_puget_sound_consolidated.zip"
+	obaGTFSURL     = "https://gtfs.sound.obaweb.org/prod/gtfs_puget_sound_consolidated.zip"
 )
 
-// obaIDPrefix matches the OBA agency-id prefix ("<n>_", e.g. "40_") that the
-// realtime feed prepends to ids; the consolidated GTFS stores bare ids.
 var obaIDPrefix = regexp.MustCompile(`^\d+_`)
 
-// stripObaPrefix removes the leading "<n>_" agency prefix. GTFS lookup keys
-// must be stripped; prefixed ids are still emitted to clients so the web can
-// attribute agency "40".
 func stripObaPrefix(id string) string {
 	if loc := obaIDPrefix.FindStringIndex(id); loc != nil {
 		return id[loc[1]:]
@@ -51,14 +34,10 @@ var (
 	errOBANon200     = errSkip("OneBusAway API returned non-2xx status")
 )
 
-// errSkip wraps a fatal-without-failing error so an optional region degrades
-// gracefully by being skipped rather than stopping the server.
 type errSkip string
 
 func (e errSkip) Error() string { return string(e) }
 
-// downloadStaticGTFS fetches a GTFS zip (optionally via a key-signed URL) to
-// destination. The consolidated Puget Sound feed is public, so keyed may be "".
 func downloadStaticGTFS(rawURL, destination, keyEnv, _ string) error {
 	url := rawURL
 	if keyEnv != "" {
@@ -95,19 +74,17 @@ func fetchBody(url string) ([]byte, error) {
 
 var seattle = newSeattleRegion()
 
-// seattleRegion mirrors the region-specific state the Bay Area region keeps
-// in package globals, isolated to the Seattle feed.
 type seattleRegion struct {
-	dir              string
-	gtfsZip          string
-	gtfsDir          string
-	tripDataDir      string
-	tripDetailsDir   string
-	shapesDir        string
-	positionsFile    string
-	refreshInterval  time.Duration
-	apiKeyEnv        string
-	agencyID         string
+	dir             string
+	gtfsZip         string
+	gtfsDir         string
+	tripDataDir     string
+	tripDetailsDir  string
+	shapesDir       string
+	positionsFile   string
+	refreshInterval time.Duration
+	apiKeyEnv       string
+	agencyID        string
 
 	positionsMu      sync.RWMutex
 	positionsPayload []byte
@@ -115,12 +92,11 @@ type seattleRegion struct {
 	positionsTime    time.Time
 	positionsErr     error
 
-	// speedHist keeps each vehicle's last observed position + server refresh
-	// time so speed (mph) can be derived from position deltas between refreshes
-	// (OBA does not report speed directly).
 	speedHistMu   sync.Mutex
 	speedHist     map[string]speedSample
 	lastRefreshAt time.Time
+
+	tripUpdates tripUpdateStore
 
 	trips        atomicPtr[map[string]TripInfo]
 	tripsMu      sync.Mutex
@@ -168,7 +144,6 @@ func newSeattleRegion() *seattleRegion {
 	}
 }
 
-// initDirs wires all region paths and should be called before use.
 func (r *seattleRegion) initDirs() {
 	r.gtfsZip = filepath.Join(r.dir, "gtfs.zip")
 	r.gtfsDir = filepath.Join(r.dir, "gtfs")
@@ -185,8 +160,6 @@ func (r *seattleRegion) apiKey() (string, error) {
 	}
 	return k, nil
 }
-
-// ---- static GTFS ----
 
 func (r *seattleRegion) loadStatic() error {
 	if err := downloadStaticGTFS(obaGTFSURL, r.gtfsZip, "", ""); err != nil {
@@ -470,6 +443,7 @@ func (r *seattleRegion) departures(stopIDs map[string]bool, limit int) []map[str
 			default:
 				continue
 			}
+			abs = r.tripUpdates.adjustedDeparture(trip.trip_id, st.stop_id, abs)
 			if abs >= nowSecs {
 				deps = append(deps, dep{abs: abs, st: st, t: trip})
 			}
@@ -513,8 +487,6 @@ func (r *seattleRegion) firstTripOnRoute(routeID string) string {
 	})
 	return r.firstTrip[routeID]
 }
-
-// ---- shapes ----
 
 func (r *seattleRegion) shapeForTrip(shapeID string) ([][2]float64, error) {
 	shapeID = stripObaPrefix(shapeID)
@@ -561,9 +533,6 @@ func (r *seattleRegion) shapeForTrip(shapeID string) ([][2]float64, error) {
 	return r.shapesCache[shapeID], nil
 }
 
-// ---- realtime (OBA JSON) ----
-
-// obaEnvelope is the top-level OBA response envelope.
 type obaEnvelope struct {
 	Code int     `json:"code"`
 	Data obaData `json:"data"`
@@ -576,14 +545,14 @@ type obaData struct {
 }
 
 type obaVehicle struct {
-	VehicleID   string       `json:"vehicleId"`
-	TripID      string       `json:"tripId"`
-	Phase       string       `json:"phase"`
-	Status      string       `json:"status"`
-	Location    *obaPoint    `json:"location"`
-	TripStatus  *obaTripSt   `json:"tripStatus"`
-	OccupStatus string       `json:"occupancyStatus"`
-	LastUpdate  int64        `json:"lastUpdateTime"`
+	VehicleID   string     `json:"vehicleId"`
+	TripID      string     `json:"tripId"`
+	Phase       string     `json:"phase"`
+	Status      string     `json:"status"`
+	Location    *obaPoint  `json:"location"`
+	TripStatus  *obaTripSt `json:"tripStatus"`
+	OccupStatus string     `json:"occupancyStatus"`
+	LastUpdate  int64      `json:"lastUpdateTime"`
 }
 
 type obaPoint struct {
@@ -623,18 +592,16 @@ type obaStop struct {
 }
 
 type obaTrip struct {
-	ID         string `json:"id"`
-	RouteID    string `json:"routeId"`
-	HeadSign   string `json:"tripHeadsign"`
-	ServiceID  string `json:"serviceId"`
-	ShapeID    string `json:"shapeId"`
-	Direction  string `json:"directionId"`
-	BlockID    string `json:"blockId"`
-	ShortName  string `json:"tripShortName"`
+	ID        string `json:"id"`
+	RouteID   string `json:"routeId"`
+	HeadSign  string `json:"tripHeadsign"`
+	ServiceID string `json:"serviceId"`
+	ShapeID   string `json:"shapeId"`
+	Direction string `json:"directionId"`
+	BlockID   string `json:"blockId"`
+	ShortName string `json:"tripShortName"`
 }
 
-// refreshPositions polls OBA for active vehicles, converting into the same
-// entity/vehicle/trip JSON shape the existing GraphQL vehicleFeed expects.
 func (r *seattleRegion) refreshPositions() error {
 	key, err := r.apiKey()
 	if err != nil {
@@ -653,6 +620,15 @@ func (r *seattleRegion) refreshPositions() error {
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		return err
 	}
+
+	perTrip := map[string]int64{}
+	for _, v := range env.Data.List {
+		if v.TripID == "" || v.TripStatus == nil {
+			continue
+		}
+		perTrip[stripObaPrefix(v.TripID)] = int64(v.TripStatus.Deviation)
+	}
+	r.tripUpdates.set(tripUpdateData{perTrip: perTrip})
 
 	payload, _ := r.buildVehicleFeed(&env)
 	var parsed map[string]interface{}
@@ -677,15 +653,11 @@ func (r *seattleRegion) refreshPositions() error {
 	return nil
 }
 
-// speedSample is a single vehicle's prior observed position and the server
-// refresh time it was seen at (used to derive speed between refreshes).
 type speedSample struct {
 	lat, lon float64
 	at       time.Time
 }
 
-// haversineMeters returns the great-circle distance in meters between two
-// lat/lon points.
 func haversineMeters(lat1, lon1, lat2, lon2 float64) float64 {
 	const earthRadiusM = 6371000.0
 	toRad := math.Pi / 180
@@ -696,9 +668,6 @@ func haversineMeters(lat1, lon1, lat2, lon2 float64) float64 {
 	return 2 * earthRadiusM * math.Asin(math.Sqrt(a))
 }
 
-// computeSpeed derives mph from the vehicle's position delta since the previous
-// refresh (spaced ~1min apart) and records the new sample. The first observation
-// of a vehicle yields 0 until a second refresh provides a delta.
 func (r *seattleRegion) computeSpeed(vehID string, lat, lon float64, at time.Time) float64 {
 	r.speedHistMu.Lock()
 	defer r.speedHistMu.Unlock()
@@ -715,7 +684,6 @@ func (r *seattleRegion) computeSpeed(vehID string, lat, lon float64, at time.Tim
 	return mph
 }
 
-// annotateSpeeds writes a derived mph speed into each entity's vehicle map.
 func (r *seattleRegion) annotateSpeeds(feed map[string]interface{}) {
 	entities, ok := feed["entity"].([]interface{})
 	if !ok {
@@ -745,11 +713,7 @@ func (r *seattleRegion) annotateSpeeds(feed map[string]interface{}) {
 	}
 }
 
-// buildVehicleFeed converts an OBA vehicles-for-agency envelope into the
-// server's vehicle-feed JSON and returns both the marshaled bytes and the
-// parsed map.
 func (r *seattleRegion) buildVehicleFeed(env *obaEnvelope) ([]byte, map[string]interface{}) {
-	// Reference maps for enrichment.
 	routeByName := map[string]obaRoute{}
 	for _, rt := range env.Data.References.Routes {
 		routeByName[rt.ID] = rt
@@ -788,12 +752,12 @@ func (r *seattleRegion) buildVehicleFeed(env *obaEnvelope) ([]byte, map[string]i
 			"id": v.VehicleID,
 		}
 		vehicle := map[string]interface{}{
-			"stopId":         "",
-			"stopName":       "",
+			"stopId":          "",
+			"stopName":        "",
 			"occupancyStatus": v.OccupStatus,
-			"timestamp":      v.LastUpdate,
-			"trip":           trip,
-			"vehicle":        veh,
+			"timestamp":       v.LastUpdate,
+			"trip":            trip,
+			"vehicle":         veh,
 		}
 		if ts := v.TripStatus; ts != nil && ts.Closest != "" {
 			vehicle["stopId"] = stripObaPrefix(ts.Closest)
@@ -807,7 +771,6 @@ func (r *seattleRegion) buildVehicleFeed(env *obaEnvelope) ([]byte, map[string]i
 				vehicle["bearing"] = v.TripStatus.Orienta
 			}
 		}
-		// Resolve route short name for the vehicle feed consumer.
 		routeID, _ := trip["routeId"].(string)
 		if routeID != "" {
 			if rt, ok := routeByName[routeID]; ok && rt.ShortName != "" {
@@ -828,8 +791,6 @@ func (r *seattleRegion) buildVehicleFeed(env *obaEnvelope) ([]byte, map[string]i
 	return r.enrich(payload), feed
 }
 
-// enrich fills schedule fields (stop name, delay, route short name) from local
-// GTFS for each active trip, mirroring enrichVehiclePositions for the region.
 func (r *seattleRegion) enrich(payload []byte) []byte {
 	var feed map[string]interface{}
 	if err := json.Unmarshal(payload, &feed); err != nil {
@@ -918,10 +879,6 @@ func (r *seattleRegion) runRefresher() {
 	}
 }
 
-// startSeattleRegion performs one-time initialization: refresh static GTFS,
-// pre-compute JSON caches, seed any on-disk realtime cache, and start the
-// realtime refresher. It is optional and degrades to a no-op (logged) if the
-// Sound Transit API key is absent.
 func startSeattleRegion() {
 	seattle.initDirs()
 	if _, err := seattle.apiKey(); err != nil {
@@ -961,8 +918,6 @@ func startSeattleRegion() {
 	go seattle.runRefresher()
 }
 
-// cacheDatafeedJSONSeattle writes a GTFS CSV table from the Seattle dir to the
-// equivalent <name>.json cache, mirroring cacheDatafeedJSON.
 func cacheDatafeedJSONSeattle(name string) error {
 	src := filepath.Join(seattle.gtfsDir, name+".txt")
 	outPath := filepath.Join(seattle.tripDataDir, name+".json")
@@ -976,8 +931,6 @@ func cacheDatafeedJSONSeattle(name string) error {
 	defer f.Close()
 	return streamCSVAsJSON(src, f)
 }
-
-// ---- resolvers ----
 
 func (r *seattleRegion) vehicles() (interface{}, time.Time) {
 	r.positionsMu.RLock()

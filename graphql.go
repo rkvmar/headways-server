@@ -24,6 +24,16 @@ func isSeattle(p graphql.ResolveParams) bool {
 	return r == "seattle" || r == "sound-transit"
 }
 
+func isSacrt(p graphql.ResolveParams) bool {
+	r, _ := p.Args["region"].(string)
+	return r == "sacrt"
+}
+
+func isElk(p graphql.ResolveParams) bool {
+	r, _ := p.Args["region"].(string)
+	return r == "elk"
+}
+
 
 var tripsCache []interface{}
 var tripsCacheMu sync.RWMutex
@@ -345,6 +355,12 @@ func resolveAgencies(p graphql.ResolveParams) (interface{}, error) {
 	if isSeattle(p) {
 		return seattle.readAgencyJSON(), nil
 	}
+	if isSacrt(p) {
+		return sacrt.readAgencyJSON(), nil
+	}
+	if isElk(p) {
+		return elk.readAgencyJSON(), nil
+	}
 	path := filepath.Join(tripDataDir, "agency.json")
 	return readJSONArray(path)
 }
@@ -352,6 +368,12 @@ func resolveAgencies(p graphql.ResolveParams) (interface{}, error) {
 func resolveRoutes(p graphql.ResolveParams) (interface{}, error) {
 	if isSeattle(p) {
 		return seattle.readRoutes(), nil
+	}
+	if isSacrt(p) {
+		return sacrt.readRoutes(), nil
+	}
+	if isElk(p) {
+		return elk.readRoutes(), nil
 	}
 	path := filepath.Join(tripDataDir, "routes.json")
 	return readJSONArray(path)
@@ -361,6 +383,12 @@ func resolveStops(p graphql.ResolveParams) (interface{}, error) {
 	if isSeattle(p) {
 		return seattle.readStops(), nil
 	}
+	if isSacrt(p) {
+		return sacrt.readStops(), nil
+	}
+	if isElk(p) {
+		return elk.readStops(), nil
+	}
 	path := filepath.Join(tripDataDir, "stops.json")
 	return readJSONArray(path)
 }
@@ -369,6 +397,12 @@ func resolveStopGroups(p graphql.ResolveParams) (interface{}, error) {
 	groups := loadStopGroups()
 	if isSeattle(p) {
 		groups = seattle.loadStopGroups()
+	}
+	if isSacrt(p) {
+		groups = sacrt.loadStopGroups()
+	}
+	if isElk(p) {
+		groups = elk.loadStopGroups()
 	}
 	out := make([]interface{}, 0, len(groups))
 	for _, g := range groups {
@@ -416,6 +450,60 @@ func resolveStop(p graphql.ResolveParams) (interface{}, error) {
 		}, nil
 	}
 
+	if isSacrt(p) {
+		if group, ok := sacrt.loadStopGroups()[stopID]; ok && len(group.Members) > 0 {
+			members := make(map[string]bool, len(group.Members))
+			for _, id := range group.Members {
+				members[id] = true
+			}
+			return map[string]interface{}{
+				"stop_id":    stopID,
+				"stop_name":  group.Name,
+				"stop_lat":   strconv.FormatFloat(group.Lat, 'f', -1, 64),
+				"stop_lon":   strconv.FormatFloat(group.Lon, 'f', -1, 64),
+				"departures": sacrt.departures(members, 30),
+			}, nil
+		}
+		stop, ok := sacrt.loadStops()[stopID]
+		if !ok {
+			return nil, nil
+		}
+		return map[string]interface{}{
+			"stop_id":    stop.stop_id,
+			"stop_name":  stop.stop_name,
+			"stop_lat":   stop.stop_lat,
+			"stop_lon":   stop.stop_lon,
+			"departures": sacrt.departures(map[string]bool{stopID: true}, 30),
+		}, nil
+	}
+
+	if isElk(p) {
+		if group, ok := elk.loadStopGroups()[stopID]; ok && len(group.Members) > 0 {
+			members := make(map[string]bool, len(group.Members))
+			for _, id := range group.Members {
+				members[id] = true
+			}
+			return map[string]interface{}{
+				"stop_id":    stopID,
+				"stop_name":  group.Name,
+				"stop_lat":   strconv.FormatFloat(group.Lat, 'f', -1, 64),
+				"stop_lon":   strconv.FormatFloat(group.Lon, 'f', -1, 64),
+				"departures": elk.departures(members, 30),
+			}, nil
+		}
+		stop, ok := elk.loadStops()[stopID]
+		if !ok {
+			return nil, nil
+		}
+		return map[string]interface{}{
+			"stop_id":    stop.stop_id,
+			"stop_name":  stop.stop_name,
+			"stop_lat":   stop.stop_lat,
+			"stop_lon":   stop.stop_lon,
+			"departures": elk.departures(map[string]bool{stopID: true}, 30),
+		}, nil
+	}
+
 	// Station group: merge departures across all member stops.
 	if group, ok := loadStopGroups()[stopID]; ok && len(group.Members) > 0 {
 		members := make(map[string]bool, len(group.Members))
@@ -447,22 +535,15 @@ func resolveStop(p graphql.ResolveParams) (interface{}, error) {
 func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
 	if isSeattle(p) {
 		trips := seattle.loadTrips()
-		result := make([]interface{}, 0, len(trips))
-		for _, t := range trips {
-			result = append(result, map[string]interface{}{
-				"trip_id":               t.trip_id,
-				"route_id":              t.route_id,
-				"service_id":            t.service_id,
-				"trip_headsign":         t.trip_headsign,
-				"direction_id":          t.direction_id,
-				"shape_id":              t.shape_id,
-				"block_id":              t.block_id,
-				"trip_short_name":       t.trip_short_name,
-				"wheelchair_accessible": t.wheelchair_accessible,
-				"bikes_allowed":         t.bikes_allowed,
-			})
-		}
-		return result, nil
+		return tripsToResult(trips), nil
+	}
+	if isSacrt(p) {
+		trips := sacrt.loadTrips()
+		return tripsToResult(trips), nil
+	}
+	if isElk(p) {
+		trips := elk.loadTrips()
+		return tripsToResult(trips), nil
 	}
 
 	tripsCacheMu.RLock()
@@ -479,6 +560,12 @@ func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
 	}
 
 	trips := loadTripsData()
+	result := tripsToResult(trips)
+	tripsCache = result
+	return result, nil
+}
+
+func tripsToResult(trips map[string]TripInfo) []interface{} {
 	result := make([]interface{}, 0, len(trips))
 	for _, t := range trips {
 		result = append(result, map[string]interface{}{
@@ -494,13 +581,34 @@ func resolveTrips(p graphql.ResolveParams) (interface{}, error) {
 			"bikes_allowed":         t.bikes_allowed,
 		})
 	}
-	tripsCache = result
-	return result, nil
+	return result
 }
 
 func resolveVehicleFeed(p graphql.ResolveParams) (interface{}, error) {
 	if isSeattle(p) {
 		parsed, t := seattle.vehicles()
+		if parsed == nil {
+			return nil, nil
+		}
+		return map[string]interface{}{
+			"fetchedAt": t.UTC().Format(time.RFC3339Nano),
+			"data":      parsed,
+		}, nil
+	}
+
+	if isSacrt(p) {
+		parsed, t := sacrt.vehicles()
+		if parsed == nil {
+			return nil, nil
+		}
+		return map[string]interface{}{
+			"fetchedAt": t.UTC().Format(time.RFC3339Nano),
+			"data":      parsed,
+		}, nil
+	}
+
+	if isElk(p) {
+		parsed, t := elk.vehicles()
 		if parsed == nil {
 			return nil, nil
 		}
@@ -533,6 +641,14 @@ func resolveTripDetail(p graphql.ResolveParams) (interface{}, error) {
 
 	if isSeattle(p) {
 		return seattleTripDetail(tripID)
+	}
+
+	if isSacrt(p) {
+		return sacrtTripDetail(tripID)
+	}
+
+	if isElk(p) {
+		return elkTripDetail(tripID)
 	}
 
 	// Try pre-computed file first
@@ -606,6 +722,18 @@ func resolveShape(p graphql.ResolveParams) (interface{}, error) {
 	var coords [][2]float64
 	if isSeattle(p) {
 		c, err := seattle.shapeForTrip(shapeID)
+		if err != nil || c == nil {
+			return [][]float64{}, nil
+		}
+		coords = c
+	} else if isSacrt(p) {
+		c, err := sacrt.shapeForTrip(shapeID)
+		if err != nil || c == nil {
+			return [][]float64{}, nil
+		}
+		coords = c
+	} else if isElk(p) {
+		c, err := elk.shapeForTrip(shapeID)
 		if err != nil || c == nil {
 			return [][]float64{}, nil
 		}

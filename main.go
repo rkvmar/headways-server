@@ -7,10 +7,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	gtfs "github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
-	"github.com/joho/godotenv"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"log"
 	"math"
@@ -23,6 +19,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	gtfs "github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
+	"github.com/joho/godotenv"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -32,6 +33,7 @@ const (
 	agencyParam         = "RG"
 	operatorParam       = "RG"
 )
+
 const (
 	vehiclePositionsCacheInterval = 1 * time.Minute
 	tripUpdatesCacheInterval      = 1 * time.Minute
@@ -52,6 +54,7 @@ var (
 	routeShapesCache              []byte
 	routeShapesCacheMu            sync.RWMutex
 )
+
 var (
 	vehiclePositionsCacheMu      sync.RWMutex
 	vehiclePositionsCachePayload []byte
@@ -80,6 +83,8 @@ var (
 	tripUpdatesCacheTime    time.Time
 )
 
+var bayAreaTripUpdates tripUpdateStore
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env not found or could not be loaded, falling back to existing env")
@@ -105,7 +110,10 @@ func main() {
 	}
 	go runDatafeedsRefresher()
 	go runVehiclePositionsRefresher()
+	go runTripUpdatesRefresher()
 	startSeattleRegion()
+	startSacrtRegion()
+	startElkRegion()
 	if data, err := os.ReadFile(vehiclePositionsCacheFilePath); err == nil && len(data) > 0 {
 		setVehiclePositionsCache(data, time.Now())
 		log.Println("Loaded cached vehicle positions from disk")
@@ -130,7 +138,6 @@ func main() {
 	mux.HandleFunc("/api/images/file/{id}", serveImageFileHandler)
 	mux.HandleFunc("/api/images/{id}", deleteImageHandler)
 	mux.HandleFunc("/api/images", vehicleImagesListHandler)
-	mux.HandleFunc("/upload", imageUploadPageHandler)
 	corsHandler := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -158,6 +165,7 @@ func main() {
 		log.Fatalf("server error: %v", err)
 	}
 }
+
 func tripUpdatesHandler(w http.ResponseWriter, r *http.Request) {
 	tripUpdatesCacheMu.RLock()
 	payload := tripUpdatesCachePayload
@@ -183,6 +191,7 @@ func tripUpdatesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
 func runTripUpdatesRefresher() {
 	if err := refreshTripUpdates(); err != nil {
 		log.Printf("trip updates refresh failed: %v", err)
@@ -195,6 +204,7 @@ func runTripUpdatesRefresher() {
 		}
 	}
 }
+
 func refreshTripUpdates() error {
 	apiKey := os.Getenv("TRIP_UPDATES_API_KEY")
 	if apiKey == "" {
@@ -224,6 +234,7 @@ func refreshTripUpdates() error {
 	if err := proto.Unmarshal(body, &feed); err != nil {
 		return fmt.Errorf("invalid GTFS-realtime protobuf from upstream: %w", err)
 	}
+	bayAreaTripUpdates.set(tripUpdatePredictions(&feed))
 	marshaler := protojson.MarshalOptions{Indent: "  "}
 	payload, err := marshaler.Marshal(&feed)
 	if err != nil {
@@ -236,6 +247,7 @@ func refreshTripUpdates() error {
 	tripUpdatesCacheMu.Unlock()
 	return nil
 }
+
 func enrichVehiclePositions(payload []byte) []byte {
 	stopsData := loadStopsData()
 	tripsData := loadTripsData()
@@ -305,6 +317,10 @@ func enrichVehiclePositions(payload []byte) []byte {
 						if st.stop_id == stopID {
 							scheduledSec := parseGTFSSeconds(st.departure_time)
 							delay := nowSec - scheduledSec
+							if pred, ok := bayAreaTripUpdates.predictedDeparture(tripID, stopID); ok {
+								p := time.Unix(pred, 0).In(loc)
+								delay = (p.Hour()*3600 + p.Minute()*60 + p.Second()) - scheduledSec
+							}
 							trip["delay"] = delay
 							break
 						}
@@ -353,6 +369,7 @@ func enrichVehiclePositions(payload []byte) []byte {
 	}
 	return enriched
 }
+
 func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
 	vehiclePositionsCacheMu.RLock()
 	payload := vehiclePositionsCachePayload
@@ -383,6 +400,7 @@ func vehiclePositionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
 func blockScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	vehicleID := r.URL.Query().Get("vehicle_id")
 	tripID := r.URL.Query().Get("trip_id")
@@ -498,6 +516,7 @@ func blockScheduleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
 func runVehiclePositionsRefresher() {
 	if err := refreshVehiclePositions(); err != nil {
 		log.Printf("vehicle positions refresh failed: %v", err)
@@ -510,6 +529,7 @@ func runVehiclePositionsRefresher() {
 		}
 	}
 }
+
 func refreshVehiclePositions() error {
 	apiKey := os.Getenv("LOCATIONS_API_KEY")
 	if apiKey == "" {
@@ -564,11 +584,13 @@ func refreshVehiclePositions() error {
 	}
 	return nil
 }
+
 func parseDirection(dir string) int32 {
 	var d int32
 	fmt.Sscanf(dir, "%d", &d)
 	return d
 }
+
 func datafeedsZipHandler(w http.ResponseWriter, r *http.Request) {
 	if datafeedsFilePath == "" {
 		http.Error(w, "datafeed not initialized", http.StatusInternalServerError)
@@ -578,6 +600,7 @@ func datafeedsZipHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=gtfs.zip")
 	http.ServeFile(w, r, datafeedsFilePath)
 }
+
 func datafeedsJSONIndexHandler(w http.ResponseWriter, r *http.Request) {
 	if datafeedsJSONFiles == nil {
 		http.Error(w, "datafeed json index not initialized", http.StatusInternalServerError)
@@ -591,6 +614,7 @@ func datafeedsJSONIndexHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
 func datafeedsJSONFileHandler(w http.ResponseWriter, r *http.Request) {
 	if datafeedsDir == "" {
 		http.Error(w, "datafeed not initialized", http.StatusInternalServerError)
@@ -708,6 +732,7 @@ func loadShapeForTrip(shapeID string) ([][2]float64, error) {
 	}
 	return shapesCache[shapeID], nil
 }
+
 func loadShapeFromDisk(shapeID string) ([][2]float64, error) {
 	entry, ok := datafeedsFileMap["shapes"]
 	if !ok {
@@ -765,6 +790,7 @@ func loadShapeFromDisk(shapeID string) ([][2]float64, error) {
 	}
 	return coords, nil
 }
+
 func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 	tripID := r.URL.Query().Get("trip_id")
 	if tripID == "" {
@@ -836,6 +862,7 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 	enc.SetIndent("", "  ")
 	enc.Encode(result)
 }
+
 func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
 	shapeID := r.URL.Query().Get("shape_id")
 	if shapeID == "" {
@@ -876,6 +903,7 @@ func routeShapesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Write(payload)
 }
+
 func datafeedsGTFSIndexHandler(w http.ResponseWriter, r *http.Request) {
 	if datafeedsFileMap == nil {
 		http.Error(w, "datafeed file map not initialized", http.StatusInternalServerError)
@@ -894,6 +922,7 @@ func datafeedsGTFSIndexHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
 func datafeedsGTFSFileHandler(w http.ResponseWriter, r *http.Request) {
 	if datafeedsFileMap == nil {
 		http.Error(w, "datafeed file map not initialized", http.StatusInternalServerError)
@@ -948,6 +977,7 @@ func datafeedsGTFSFileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported file type", http.StatusBadRequest)
 	}
 }
+
 func downloadDatafeed(destination string) error {
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
@@ -981,6 +1011,7 @@ func downloadDatafeed(destination string) error {
 	}
 	return nil
 }
+
 func unzipDatafeed(zipPath, destination string) error {
 	if err := os.RemoveAll(destination); err != nil {
 		return fmt.Errorf("failed to clear destination: %w", err)
@@ -1000,6 +1031,7 @@ func unzipDatafeed(zipPath, destination string) error {
 	}
 	return nil
 }
+
 func extractShapeFiles() error {
 	entry, ok := datafeedsFileMap["shapes"]
 	if !ok {
@@ -1084,6 +1116,7 @@ func extractShapeFiles() error {
 	log.Printf("Extracted %d individual shape files to %s", len(shapeIDs), shapesDir)
 	return nil
 }
+
 func getActiveTripIDs() []string {
 	vehiclePositionsCacheMu.RLock()
 	payload := vehiclePositionsCachePayload
@@ -1117,6 +1150,7 @@ func getActiveTripIDs() []string {
 	}
 	return tripIDs
 }
+
 func precomputeActiveTripDetails(activeTripIDs []string) {
 	if len(activeTripIDs) == 0 {
 		log.Println("No active trips to precompute")
@@ -1195,6 +1229,7 @@ func precomputeActiveTripDetails(activeTripIDs []string) {
 	}
 	log.Printf("Pre-computed trip details for %d active trips", count)
 }
+
 func cacheDatafeedJSON(name string) error {
 	entry, ok := datafeedsFileMap[name]
 	if !ok {
@@ -1227,6 +1262,7 @@ func cacheDatafeedJSON(name string) error {
 	}())
 	return nil
 }
+
 func extractZipFile(file *zip.File, destination string) error {
 	cleanName := filepath.Clean(file.Name)
 	if strings.HasPrefix(cleanName, "..") {
@@ -1260,6 +1296,7 @@ func extractZipFile(file *zip.File, destination string) error {
 	}
 	return nil
 }
+
 func indexJSONFiles(root string) ([]string, error) {
 	var files []string
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -1282,6 +1319,7 @@ func indexJSONFiles(root string) ([]string, error) {
 	}
 	return files, nil
 }
+
 func indexDatafeedFiles(root string) ([]string, error) {
 	var files []string
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -1331,6 +1369,7 @@ func buildDatafeedFileMap(root string) (map[string]datafeedEntry, error) {
 	}
 	return fileMap, nil
 }
+
 func streamCSVAsJSON(path string, w io.Writer) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1383,6 +1422,7 @@ func streamCSVAsJSON(path string, w io.Writer) error {
 	}
 	return nil
 }
+
 func isSubpath(basePath, targetPath string) bool {
 	rel, err := filepath.Rel(basePath, targetPath)
 	if err != nil {
@@ -1390,6 +1430,7 @@ func isSubpath(basePath, targetPath string) bool {
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
+
 func readResponseBody(resp *http.Response) ([]byte, error) {
 	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
 	switch encoding {
@@ -1413,6 +1454,7 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported content-encoding: %s", encoding)
 	}
 }
+
 func refreshDatafeeds() error {
 	if err := downloadDatafeed(datafeedsFilePath); err != nil {
 		return fmt.Errorf("failed to download datafeed: %w", err)
@@ -1548,6 +1590,7 @@ func loadVehicleTypeConfig() *VehicleTypeConfig {
 	})
 	return vehicleTypeConfig
 }
+
 func lookupVehicleType(agencyCode, vehicleID string) *VehicleTypeInfo {
 	config := loadVehicleTypeConfig()
 	if config == nil {
@@ -1710,6 +1753,7 @@ func loadTripsData() map[string]TripInfo {
 	tripsData.Store(&trips)
 	return trips
 }
+
 func loadStopTimesForTrip(tripID string) []StopTimeInfo {
 	if m := stopTimesData.Load(); m != nil {
 		return (*m)[tripID]
@@ -1789,6 +1833,7 @@ func loadStopTimesForTrip(tripID string) []StopTimeInfo {
 	stopTimesData.Store(&st)
 	return st[tripID]
 }
+
 func loadStopsData() map[string]StopInfo {
 	if m := stopsData.Load(); m != nil {
 		return *m
@@ -2010,12 +2055,14 @@ func mergeNearbyStops(groups []StopGroup) []StopGroup {
 	}
 	return out
 }
+
 func stopDistFeet(aLat, aLon, bLat, bLon float64) float64 {
 	const metersPerDeg = 111320.0
 	dLat := (bLat - aLat) * metersPerDeg
 	dLon := (bLon - aLon) * metersPerDeg * math.Cos(aLat*math.Pi/180)
 	return math.Sqrt(dLat*dLat+dLon*dLon) / 0.3048
 }
+
 func loadRoutesData() map[string]RouteInfo {
 	if m := routesData.Load(); m != nil {
 		return *m
@@ -2065,6 +2112,7 @@ func loadRoutesData() map[string]RouteInfo {
 	routesData.Store(&routes)
 	return routes
 }
+
 func getRouteShortName(routeID string) string {
 	routes := loadRoutesData()
 	if route, ok := routes[routeID]; ok {
@@ -2075,6 +2123,7 @@ func getRouteShortName(routeID string) string {
 	}
 	return routeID
 }
+
 func getRouteLongName(routeID string) string {
 	routes := loadRoutesData()
 	if route, ok := routes[routeID]; ok {
@@ -2085,6 +2134,7 @@ func getRouteLongName(routeID string) string {
 	}
 	return routeID
 }
+
 func scanCSVRows(path string, fn func(map[string]string)) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -2112,6 +2162,7 @@ func scanCSVRows(path string, fn func(map[string]string)) {
 		fn(rec)
 	}
 }
+
 func loadAgencyTimezone() *time.Location {
 	var tz string
 	scanCSVRows(filepath.Join(datafeedsDir, "agency.txt"), func(rec map[string]string) {
@@ -2124,6 +2175,7 @@ func loadAgencyTimezone() *time.Location {
 	}
 	return time.UTC
 }
+
 func todaysServiceIDs(day time.Time) map[string]bool {
 	active := make(map[string]bool)
 	date := day.Format("20060102")
@@ -2144,11 +2196,13 @@ func todaysServiceIDs(day time.Time) map[string]bool {
 	})
 	return active
 }
+
 func parseGTFSSeconds(t string) int {
 	var h, m, s int
 	fmt.Sscanf(t, "%d:%d:%d", &h, &m, &s)
 	return h*3600 + m*60 + s
 }
+
 func stopDepartures(stopIDs map[string]bool, limit int) []map[string]interface{} {
 	now := time.Now().In(loadAgencyTimezone())
 	nowSecs := now.Unix()
@@ -2187,6 +2241,7 @@ func stopDepartures(stopIDs map[string]bool, limit int) []map[string]interface{}
 			default:
 				continue
 			}
+			abs = bayAreaTripUpdates.adjustedDeparture(trip.trip_id, st.stop_id, abs)
 			if abs >= nowSecs {
 				deps = append(deps, dep{abs: abs, st: st, trip: trip})
 			}
@@ -2222,6 +2277,7 @@ func stopDepartures(stopIDs map[string]bool, limit int) []map[string]interface{}
 	}
 	return out
 }
+
 func vehicleTypesHandler(w http.ResponseWriter, r *http.Request) {
 	config := loadVehicleTypeConfig()
 	if config == nil {
@@ -2237,6 +2293,7 @@ func vehicleTypesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
 func runDatafeedsRefresher() {
 	ticker := time.NewTicker(datafeedsRefreshInterval)
 	defer ticker.Stop()

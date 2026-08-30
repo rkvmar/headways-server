@@ -12,8 +12,6 @@ import (
 func TestEnrichVehiclePositionsTripInfo(t *testing.T) {
 	datafeedsDir = filepath.Join("data", "gtfs")
 
-	// Use a trip that exists in the currently downloaded feed; upstream
-	// agencies rotate trip IDs, so hardcoding one rots.
 	file, err := os.Open(filepath.Join(datafeedsDir, "trips.txt"))
 	if err != nil {
 		t.Skipf("no trips.txt available: %v", err)

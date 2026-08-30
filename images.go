@@ -18,7 +18,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// VehicleImage represents an image for a transit vehicle.
 type VehicleImage struct {
 	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	VehicleID   string             `bson:"vehicle_id" json:"vehicle_id"`
@@ -31,10 +30,8 @@ type VehicleImage struct {
 	UploadedAt  time.Time          `bson:"uploaded_at" json:"uploaded_at"`
 }
 
-// maxUploadBytes caps accepted upload size.
 const maxUploadBytes = 10 << 20 // 10 MB
 
-// uploadableContentType reports whether the given MIME type is an image we'll accept.
 func uploadableContentType(ct string) bool {
 	switch ct {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
@@ -43,7 +40,6 @@ func uploadableContentType(ct string) bool {
 	return false
 }
 
-// createImageRequest is the JSON body for creating an image record.
 type createImageRequest struct {
 	ImageURL    string `json:"image_url"`
 	VehicleID   string `json:"vehicle_id"`
@@ -57,7 +53,6 @@ var (
 	imagesCollection *mongo.Collection
 )
 
-// initMongoDB connects to MongoDB and ensures the images collection exists.
 func initMongoDB() error {
 	uri := os.Getenv("MONGODB_URI")
 	if uri == "" {
@@ -72,7 +67,6 @@ func initMongoDB() error {
 		return fmt.Errorf("mongo connect: %w", err)
 	}
 
-	// Ping to verify the connection.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx, nil); err != nil {
@@ -87,7 +81,6 @@ func initMongoDB() error {
 	return nil
 }
 
-// closeMongoDB gracefully closes the MongoDB connection.
 func closeMongoDB() {
 	if mongoClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -96,11 +89,6 @@ func closeMongoDB() {
 	}
 }
 
-// --- HTTP Handlers ---
-
-// createImageHandler handles POST /api/images/upload
-// Accepts either multipart/form-data (a `file` part + fields) for direct upload,
-// or JSON with image_url, vehicle_id, agency_code, attribution, description.
 func createImageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -119,7 +107,6 @@ func createImageHandler(w http.ResponseWriter, r *http.Request) {
 	hasFile := false
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		// Limit total request size to avoid unbounded memory.
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 			http.Error(w, fmt.Sprintf("failed to parse upload: %v", err), http.StatusBadRequest)
@@ -190,9 +177,7 @@ func createImageHandler(w http.ResponseWriter, r *http.Request) {
 
 	img.ID = result.InsertedID.(primitive.ObjectID)
 	if hasFile {
-		// Serve uploaded bytes back through our own endpoint.
 		img.ImageURL = "/api/images/file/" + img.ID.Hex()
-		// persist the derived serving URL
 		if _, err := imagesCollection.UpdateOne(ctx, bson.M{"_id": img.ID},
 			bson.M{"$set": bson.M{"image_url": img.ImageURL}}); err != nil {
 			log.Printf("mongo update image_url failed: %v", err)
@@ -204,7 +189,6 @@ func createImageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(img)
 }
 
-// serveImageFileHandler serves stored upload bytes at GET /api/images/file/{id}
 func serveImageFileHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -240,7 +224,6 @@ func serveImageFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(img.ImageData.Data)
 }
 
-// vehicleImagesHandler handles GET /api/images/vehicle/{vehicle_id}
 func vehicleImagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -287,7 +270,6 @@ func vehicleImagesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(images)
 }
 
-// deleteImageHandler handles DELETE /api/images/{id}
 func deleteImageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -329,7 +311,6 @@ func deleteImageHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// vehicleImagesListHandler handles GET /api/images - lists all images across all vehicles
 func vehicleImagesListHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -368,7 +349,6 @@ func vehicleImagesListHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(images)
 }
 
-// imageUploadPageHandler serves a simple HTML page for adding an image URL
 func imageUploadPageHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `<!DOCTYPE html>
