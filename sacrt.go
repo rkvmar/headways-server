@@ -564,6 +564,7 @@ func (r *sacrtRegion) enrich(payload []byte) []byte {
 				}
 			}
 		}
+		enrichVehicleType(vehicle, "SRTD")
 	}
 	out, err := json.Marshal(feed)
 	if err != nil {

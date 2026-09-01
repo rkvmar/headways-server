@@ -573,6 +573,7 @@ func (r *elkRegion) enrich(payload []byte) []byte {
 				}
 			}
 		}
+		enrichVehicleType(vehicle, "e-tran")
 	}
 	out, err := json.Marshal(feed)
 	if err != nil {

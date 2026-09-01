@@ -1591,6 +1591,27 @@ func loadVehicleTypeConfig() *VehicleTypeConfig {
 	return vehicleTypeConfig
 }
 
+// enrichVehicleType sets vehicle make/model/year/fuel fields for a fixed
+// agency code. Used by sacrt/elk, whose realtime IDs carry no agency prefix.
+func enrichVehicleType(vehicle map[string]interface{}, agencyCode string) {
+	vehObj, ok := vehicle["vehicle"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	vehicleID, _ := vehObj["id"].(string)
+	if vehicleID == "" {
+		return
+	}
+	if vti := lookupVehicleType(agencyCode, vehicleID); vti != nil {
+		vehicle["vehicleYear"] = vti.Year
+		vehicle["vehicleMake"] = vti.Make
+		vehicle["vehicleModel"] = vti.Model
+		vehicle["vehicleFuel"] = vti.Fuel
+		vehicle["vehicleLength"] = vti.Length
+		vehicle["vehicleIconCode"] = vti.IconCode
+	}
+}
+
 func lookupVehicleType(agencyCode, vehicleID string) *VehicleTypeInfo {
 	config := loadVehicleTypeConfig()
 	if config == nil {
