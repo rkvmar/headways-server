@@ -1,14 +1,5 @@
 package main
 
-// Elk Grove Transit (SacRT Elk Grove / e-tran) via the public GTFS +
-// GTFS-realtime feeds. Runs as a self-contained region beside the Bay Area
-// (511), Sound Transit (OBA), and SacRT regions, keeping its own directory
-// paths and caches. Realtime feeds are public GTFS-RT protobuf, so no API key
-// is needed and the IDs line up directly with the static GTFS.
-//
-// ponytail: duplicate loader logic as sacrt.go/oba.go; fold all into a shared
-// Region type if yet another region arrives.
-
 import (
 	"encoding/json"
 	"fmt"
@@ -81,8 +72,6 @@ func (r *elkRegion) initDirs() {
 	r.shapesDir = filepath.Join(r.dir, "shapes")
 	r.positionsFile = filepath.Join(r.dir, "vehicle_positions.json")
 }
-
-// ---- static GTFS ----
 
 func (r *elkRegion) loadStatic() error {
 	if err := downloadStaticGTFS(elkGTFSURL, r.gtfsZip, "", ""); err != nil {
@@ -454,10 +443,6 @@ func (r *elkRegion) shapeForTrip(shapeID string) ([][2]float64, error) {
 	return r.shapesCache[shapeID], nil
 }
 
-// ---- realtime (GTFS-RT protobuf) ----
-
-// refreshPositions polls the public Elk Grove vehicle-positions feed, converts the
-// protobuf to JSON, enriches it from local GTFS, and caches it.
 func (r *elkRegion) refreshPositions() error {
 	body, err := fetchBody(elkVehiclesURL)
 	if err != nil {
@@ -487,8 +472,6 @@ func (r *elkRegion) refreshPositions() error {
 	return nil
 }
 
-// parsePositions converts a raw GTFS-realtime protobuf body into enriched
-// vehicle-feed JSON, mirroring what the live feed produces.
 func (r *elkRegion) parsePositions(body []byte) ([]byte, error) {
 	var feed gtfs.FeedMessage
 	if err := proto.Unmarshal(body, &feed); err != nil {
@@ -501,9 +484,6 @@ func (r *elkRegion) parsePositions(body []byte) ([]byte, error) {
 	return r.enrich(marshaled), nil
 }
 
-// enrich fills schedule fields (headdsign, stop name, delay, route short name)
-// from local GTFS for each active trip. Elk Grove realtime IDs match the static
-// GTFS directly, so no ID rewriting is needed.
 func (r *elkRegion) enrich(payload []byte) []byte {
 	var feed map[string]interface{}
 	if err := json.Unmarshal(payload, &feed); err != nil {
@@ -581,8 +561,6 @@ func (r *elkRegion) enrich(payload []byte) []byte {
 	return out
 }
 
-// refreshTripUpdates polls the public Elk Grove trip-updates feed and stores the
-// per-stop predictions for the departures/delay lookups.
 func (r *elkRegion) refreshTripUpdates() error {
 	body, err := fetchBody(elkTripsURL)
 	if err != nil {
@@ -615,9 +593,6 @@ func (r *elkRegion) runRefresher() {
 	}
 }
 
-// startElkRegion performs one-time initialization: refresh static GTFS,
-// pre-compute JSON caches, seed any on-disk realtime cache, and start the
-// realtime refresher. Unlike Seattle there is no API key, so it always runs.
 func startElkRegion() {
 	elk.initDirs()
 	go func() {
@@ -652,8 +627,6 @@ func startElkRegion() {
 	go elk.runRefresher()
 }
 
-// cacheDatafeedJSONElk writes a GTFS CSV table from the Elk Grove dir to the
-// equivalent <name>.json cache, mirroring cacheDatafeedJSONSeattle.
 func cacheDatafeedJSONElk(name string) error {
 	src := filepath.Join(elk.gtfsDir, name+".txt")
 	outPath := filepath.Join(elk.tripDataDir, name+".json")
@@ -667,8 +640,6 @@ func cacheDatafeedJSONElk(name string) error {
 	defer f.Close()
 	return streamCSVAsJSON(src, f)
 }
-
-// ---- resolvers ----
 
 func (r *elkRegion) vehicles() (interface{}, time.Time) {
 	r.positionsMu.RLock()
