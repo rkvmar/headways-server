@@ -2003,8 +2003,8 @@ func loadStopGroups() map[string]StopGroup {
 }
 
 const (
-	stopMergeRadiusFeet     = 1000 // same intersection name
-	stopMergeNearRadiusFeet = 500  // any nearby stop, regardless of name
+	stopMergeRadiusFeet     = 500 // same intersection name
+	stopMergeNearRadiusFeet = 500 // nearby lone stop absorbed into a station
 )
 
 func sameIntersectionName(a, b string) bool {
@@ -2042,6 +2042,9 @@ func mergeNearbyStops(groups []StopGroup) []StopGroup {
 		}
 		return i
 	}
+	// isStation reports whether a pre-merge group already bundles several
+	// platforms (a parent-station group), as opposed to a lone stop.
+	isStation := func(i int) bool { return len(groups[i].Members) > 1 }
 	for i := range groups {
 		root := rootOf(i)
 		if root != i {
@@ -2060,10 +2063,14 @@ func mergeNearbyStops(groups []StopGroup) []StopGroup {
 							continue
 						}
 						d := stopDistFeet(cur.Lat, cur.Lon, groups[j].Lat, groups[j].Lon)
-						if (sameIntersectionName(cur.Name, groups[j].Name) && d <= stopMergeRadiusFeet) ||
-							d <= stopMergeNearRadiusFeet {
+						if sameIntersectionName(cur.Name, groups[j].Name) && d <= stopMergeRadiusFeet {
 							absorbedInto[j] = root
 							queue = append(queue, j)
+						} else if isStation(idx) && !isStation(j) && d <= stopMergeNearRadiusFeet {
+							// A station absorbs a lone nearby stop. Do not
+							// enqueue it: chaining lone stops links every stop
+							// along a dense street into one giant group.
+							absorbedInto[j] = root
 						}
 					}
 				}
@@ -2078,32 +2085,48 @@ func mergeNearbyStops(groups []StopGroup) []StopGroup {
 	folds := make([]fold, len(groups))
 	for i := range groups {
 		folds[i] = fold{g: groups[i], members: map[string]bool{}, route: groups[i].RouteID}
-		folds[i].members[groups[i].GroupID] = true
+		if len(groups[i].Members) == 0 {
+			folds[i].members[groups[i].GroupID] = true
+		} else {
+			for _, m := range groups[i].Members {
+				folds[i].members[m] = true
+			}
+		}
 	}
 	out := make([]StopGroup, 0, len(groups))
 	for i := range groups {
 		if rootOf(i) != i {
 			continue
 		}
-		f := folds[i]
+		members := map[string]bool{}
+		route := ""
+		rep := i
 		for j := range groups {
-			if j != i && rootOf(j) == i {
-				for id := range folds[j].members {
-					f.members[id] = true
-				}
-				if folds[j].route != "" && (f.route == "" || folds[j].route < f.route) {
-					f.route = folds[j].route
-				}
+			if j != i && rootOf(j) != i {
+				continue
+			}
+			for id := range folds[j].members {
+				members[id] = true
+			}
+			if folds[j].route != "" && (route == "" || folds[j].route < route) {
+				route = folds[j].route
+			}
+			// Prefer the constituent with the most member stops as the
+			// representative, so a merged station keeps its parent-station
+			// name instead of whichever stop happened to sort first.
+			if len(folds[j].members) > len(folds[rep].members) ||
+				(len(folds[j].members) == len(folds[rep].members) && folds[j].g.GroupID < folds[rep].g.GroupID) {
+				rep = j
 			}
 		}
-		members := make([]string, 0, len(f.members))
-		for id := range f.members {
-			members = append(members, id)
+		ids := make([]string, 0, len(members))
+		for id := range members {
+			ids = append(ids, id)
 		}
-		sort.Strings(members)
-		g := f.g
-		g.Members = members
-		g.RouteID = f.route
+		sort.Strings(ids)
+		g := folds[rep].g
+		g.Members = ids
+		g.RouteID = route
 		out = append(out, g)
 	}
 	return out
