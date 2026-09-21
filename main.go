@@ -88,8 +88,10 @@ var bayAreaTripUpdates tripUpdateStore
 // API keys used for the 511 vehicle-positions pull, rotated on each refresh
 // to stay under the per-key rate limit. Read from LOCATIONS_API_KEY plus
 // LOCATIONS_API_KEY_2.._4 in main().
-var locationsAPIKeys []string
-var locationsAPIKeyIdx atomic.Uint32
+var (
+	locationsAPIKeys   []string
+	locationsAPIKeyIdx atomic.Uint32
+)
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -838,16 +840,16 @@ func tripDetailHandler(w http.ResponseWriter, r *http.Request) {
 	schedule := make([]map[string]interface{}, 0, len(times))
 	for _, st := range times {
 		stop := stops[st.stop_id]
-entry := map[string]interface{}{
-				"stop_id":        st.stop_id,
-				"stop_sequence":  st.stop_sequence,
-				"arrival_time":   gtfsTimeString(st.arrival_time),
-				"departure_time": gtfsTimeString(st.departure_time),
-				"stop_name":      stop.stop_name,
-				"stop_lat":       stop.stop_lat,
-				"stop_lon":       stop.stop_lon,
-			}
-			schedule = append(schedule, entry)
+		entry := map[string]interface{}{
+			"stop_id":        st.stop_id,
+			"stop_sequence":  st.stop_sequence,
+			"arrival_time":   gtfsTimeString(st.arrival_time),
+			"departure_time": gtfsTimeString(st.departure_time),
+			"stop_name":      stop.stop_name,
+			"stop_lat":       stop.stop_lat,
+			"stop_lon":       stop.stop_lon,
+		}
+		schedule = append(schedule, entry)
 	}
 	var shapeCoords [][2]float64
 	if trip.shape_id != "" {
@@ -1207,18 +1209,18 @@ func precomputeActiveTripDetails(activeTripIDs []string) {
 		schedule := make([]map[string]interface{}, 0, len(times))
 		for _, st := range times {
 			stop := stops[st.stop_id]
-entry := map[string]interface{}{
-			"stop_id":        st.stop_id,
-			"stop_sequence":  st.stop_sequence,
-			"arrival_time":   gtfsTimeString(st.arrival_time),
-			"departure_time": gtfsTimeString(st.departure_time),
-			"stop_name":      stop.stop_name,
-			"stop_lat":       stop.stop_lat,
-			"stop_lon":       stop.stop_lon,
+			entry := map[string]interface{}{
+				"stop_id":        st.stop_id,
+				"stop_sequence":  st.stop_sequence,
+				"arrival_time":   gtfsTimeString(st.arrival_time),
+				"departure_time": gtfsTimeString(st.departure_time),
+				"stop_name":      stop.stop_name,
+				"stop_lat":       stop.stop_lat,
+				"stop_lon":       stop.stop_lon,
+			}
+			schedule = append(schedule, entry)
 		}
-		schedule = append(schedule, entry)
-	}
-	result := map[string]interface{}{
+		result := map[string]interface{}{
 			"trip_id":         trip.trip_id,
 			"route_id":        trip.route_id,
 			"service_id":      trip.service_id,
@@ -2000,7 +2002,25 @@ func loadStopGroups() map[string]StopGroup {
 	return byID
 }
 
-const stopMergeRadiusFeet = 500
+const (
+	stopMergeRadiusFeet     = 1000 // same intersection name
+	stopMergeNearRadiusFeet = 500  // any nearby stop, regardless of name
+)
+
+func sameIntersectionName(a, b string) bool {
+	return normalizeStopName(a) == normalizeStopName(b)
+}
+
+func normalizeStopName(name string) string {
+	parts := strings.Split(strings.ToLower(name), "&")
+	for i, p := range parts {
+		parts[i] = strings.Join(strings.FieldsFunc(p, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+		}), " ")
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "&")
+}
 
 func mergeNearbyStops(groups []StopGroup) []StopGroup {
 	cellDeg := (stopMergeRadiusFeet * 0.3048) / 111320.0
@@ -2039,8 +2059,9 @@ func mergeNearbyStops(groups []StopGroup) []StopGroup {
 						if rootOf(j) == root {
 							continue
 						}
-						if groups[j].Name == cur.Name &&
-							stopDistFeet(cur.Lat, cur.Lon, groups[j].Lat, groups[j].Lon) <= stopMergeRadiusFeet {
+						d := stopDistFeet(cur.Lat, cur.Lon, groups[j].Lat, groups[j].Lon)
+						if (sameIntersectionName(cur.Name, groups[j].Name) && d <= stopMergeRadiusFeet) ||
+							d <= stopMergeNearRadiusFeet {
 							absorbedInto[j] = root
 							queue = append(queue, j)
 						}

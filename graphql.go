@@ -417,6 +417,26 @@ func resolveStopGroups(p graphql.ResolveParams) (interface{}, error) {
 	return out, nil
 }
 
+// findStopGroup resolves a stop id to its station group, either directly (the
+// id is a group key) or as a member of a merged group.
+func findStopGroup(stopID string) (StopGroup, bool) {
+	groups := loadStopGroups()
+	if g, ok := groups[stopID]; ok && len(g.Members) > 0 {
+		return g, true
+	}
+	for _, g := range groups {
+		if len(g.Members) <= 1 {
+			continue
+		}
+		for _, m := range g.Members {
+			if m == stopID {
+				return g, true
+			}
+		}
+	}
+	return StopGroup{}, false
+}
+
 func resolveStop(p graphql.ResolveParams) (interface{}, error) {
 	stopID, _ := p.Args["stopId"].(string)
 	if stopID == "" {
@@ -505,13 +525,13 @@ func resolveStop(p graphql.ResolveParams) (interface{}, error) {
 	}
 
 	// Station group: merge departures across all member stops.
-	if group, ok := loadStopGroups()[stopID]; ok && len(group.Members) > 0 {
+	if group, ok := findStopGroup(stopID); ok {
 		members := make(map[string]bool, len(group.Members))
 		for _, id := range group.Members {
 			members[id] = true
 		}
 		return map[string]interface{}{
-			"stop_id":    stopID,
+			"stop_id":    group.GroupID,
 			"stop_name":  group.Name,
 			"stop_lat":   strconv.FormatFloat(group.Lat, 'f', -1, 64),
 			"stop_lon":   strconv.FormatFloat(group.Lon, 'f', -1, 64),
