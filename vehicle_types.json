@@ -151,6 +151,16 @@
           "fuel": "Electric",
           "length": 80,
           "icon_code": "tram"
+        },
+        {
+          "start": "8001",
+          "end": "8094",
+          "year": 2025,
+          "make": "New Flyer",
+          "model": "Xcelsior XDE40",
+          "fuel": "Diesel-Electric Hybrid",
+          "length": 40,
+          "icon_code": "bus"
         }
       ],
       "exact": {
