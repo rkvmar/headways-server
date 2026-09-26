@@ -42,6 +42,11 @@ type VehicleImage struct {
 
 const maxUploadBytes = 10 << 20 // 10 MB
 
+// maxUploadInMemory is how much of an upload Go keeps in RAM before spilling
+// the rest to a temp file. The file is read once more into a []byte, so holding
+// it in memory too would double the cost of every upload.
+const maxUploadInMemory = 1 << 20 // 1 MB
+
 func uploadableContentType(ct string) bool {
 	switch ct {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
@@ -57,12 +62,30 @@ const (
 )
 
 // resizeImage downscales (never upscales) an image to fit within
-// 320x180, preserving aspect ratio. It returns the original bytes unchanged
+// 1600x900, preserving aspect ratio. It returns the original bytes unchanged
 // when the image is already small enough; otherwise the result is JPEG.
 func resizeImage(data []byte, contentType string) ([]byte, string, error) {
-	var img image.Image
+	isWebP := strings.EqualFold(contentType, "image/webp")
+
+	// DecodeConfig reads only the header, so an image that already fits is
+	// stored as-is without ever materializing its pixels (which for a large
+	// photo costs ~4 bytes per pixel of RAM).
+	var cfg image.Config
 	var err error
-	if strings.EqualFold(contentType, "image/webp") {
+	if isWebP {
+		cfg, err = webp.DecodeConfig(bytes.NewReader(data))
+	} else {
+		cfg, _, err = image.DecodeConfig(bytes.NewReader(data))
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.Width <= maxImageWidth && cfg.Height <= maxImageHeight {
+		return data, contentType, nil
+	}
+
+	var img image.Image
+	if isWebP {
 		img, err = webp.Decode(bytes.NewReader(data))
 	} else {
 		img, _, err = image.Decode(bytes.NewReader(data))
@@ -71,9 +94,6 @@ func resizeImage(data []byte, contentType string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	b := img.Bounds()
-	if b.Dx() <= maxImageWidth && b.Dy() <= maxImageHeight {
-		return data, contentType, nil
-	}
 	scale := math.Min(float64(maxImageWidth)/float64(b.Dx()), float64(maxImageHeight)/float64(b.Dy()))
 	w := int(math.Round(float64(b.Dx()) * scale))
 	h := int(math.Round(float64(b.Dy()) * scale))
@@ -133,6 +153,26 @@ func initMongoDB() error {
 	return nil
 }
 
+// findImageRecords runs a listing query. image_data is always excluded: listing
+// responses drop it via json:"-", so fetching the blob would pull every image's
+// bytes into memory only to discard them (tens of MB per request).
+func findImageRecords(ctx context.Context, filter bson.M, opts *options.FindOptions) ([]VehicleImage, error) {
+	cursor, err := imagesCollection.Find(ctx, filter, opts.SetProjection(bson.M{"image_data": 0}))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var images []VehicleImage
+	if err := cursor.All(ctx, &images); err != nil {
+		return nil, err
+	}
+	if images == nil {
+		images = []VehicleImage{}
+	}
+	return images, nil
+}
+
 func closeMongoDB() {
 	if mongoClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -160,10 +200,11 @@ func createImageHandler(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		if err := r.ParseMultipartForm(maxUploadInMemory); err != nil {
 			http.Error(w, fmt.Sprintf("failed to parse upload: %v", err), http.StatusBadRequest)
 			return
 		}
+		defer r.MultipartForm.RemoveAll()
 		vehID = r.FormValue("vehicle_id")
 		agency = r.FormValue("agency_code")
 		attribution = r.FormValue("attribution")
@@ -304,28 +345,14 @@ func vehicleImagesHandler(w http.ResponseWriter, r *http.Request) {
 	if agency := r.URL.Query().Get("agency"); agency != "" {
 		filter["agency_code"] = agency
 	}
-	opts := options.Find().SetSort(bson.M{"uploaded_at": -1})
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := imagesCollection.Find(ctx, filter, opts)
+	images, err := findImageRecords(ctx, filter, options.Find().SetSort(bson.M{"uploaded_at": -1}))
 	if err != nil {
 		log.Printf("mongo find failed: %v", err)
 		http.Error(w, fmt.Sprintf("failed to query images: %v", err), http.StatusInternalServerError)
 		return
-	}
-	defer cursor.Close(ctx)
-
-	var images []VehicleImage
-	if err := cursor.All(ctx, &images); err != nil {
-		log.Printf("mongo cursor decode failed: %v", err)
-		http.Error(w, fmt.Sprintf("failed to decode results: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if images == nil {
-		images = []VehicleImage{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -388,23 +415,11 @@ func vehicleImagesListHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	opts := options.Find().SetSort(bson.M{"uploaded_at": -1}).SetLimit(50)
-	cursor, err := imagesCollection.Find(ctx, bson.M{}, opts)
+	images, err := findImageRecords(ctx, bson.M{}, opts)
 	if err != nil {
 		log.Printf("mongo list all failed: %v", err)
-		http.Error(w, "failed to query images", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to query images: %v", err), http.StatusInternalServerError)
 		return
-	}
-	defer cursor.Close(ctx)
-
-	var images []VehicleImage
-	if err := cursor.All(ctx, &images); err != nil {
-		log.Printf("mongo cursor decode failed: %v", err)
-		http.Error(w, "failed to decode results", http.StatusInternalServerError)
-		return
-	}
-
-	if images == nil {
-		images = []VehicleImage{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
